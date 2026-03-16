@@ -29,6 +29,8 @@ struct MenuView: View {
     @Default(.cliInstalled) var cliInstalled
     @Default(.pauseAutomaticOptimisations) var pauseAutomaticOptimisations
     @Default(.allowClopToAppearInScreenshots) var allowClopToAppearInScreenshots
+    @Default(.activeImagePreset) var activeImagePreset
+    @Default(.activeVideoPreset) var activeVideoPreset
 
     @State var cliInstallResult: String?
 
@@ -83,6 +85,25 @@ struct MenuView: View {
                 Task.init { try? await quickLookLastClipboardItem() }
             }.keyboardShortcut(" ", modifiers: keyComboModifiers.eventModifiers)
 
+        }
+
+        Section("Presets") {
+            Menu("Image: \(IMAGE_PRESETS[activeImagePreset]?.name ?? "Chat")") {
+                ForEach(Array(IMAGE_PRESETS.keys.sorted()), id: \.self) { key in
+                    let preset = IMAGE_PRESETS[key]!
+                    Button(activeImagePreset == key ? "\(preset.name) ✓" : preset.name) {
+                        activeImagePreset = key
+                    }
+                }
+            }
+            Menu("Video: \(VIDEO_PRESETS[activeVideoPreset]?.name ?? "Web")") {
+                ForEach(Array(VIDEO_PRESETS.keys.sorted()), id: \.self) { key in
+                    let preset = VIDEO_PRESETS[key]!
+                    Button(activeVideoPreset == key ? "\(preset.name) ✓" : preset.name) {
+                        activeVideoPreset = key
+                    }
+                }
+            }
         }
 
         Section("Backups") {
