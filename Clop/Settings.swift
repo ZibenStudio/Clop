@@ -121,6 +121,12 @@ extension Defaults.Keys {
     static let adaptiveVideoSize = Key<Bool>("adaptiveVideoSize", default: true)
     static let adaptiveImageSize = Key<Bool>("adaptiveImageSize", default: false)
     // static let downscaleRetinaImages = Key<Bool>("downscaleRetinaImages", default: false)
+
+    // MARK: - Auto resize & convert (Ziben custom)
+    static let autoResizeClipboardImages = Key<Bool>("autoResizeClipboardImages", default: true)
+    static let clipboardMaxWidth = Key<Int>("clipboardMaxWidth", default: 2560)
+    static let clipboardMaxHeight = Key<Int>("clipboardMaxHeight", default: 1440)
+    static let autoConvertClipboardToWebP = Key<Bool>("autoConvertClipboardToWebP", default: true)
     static let copyImageFilePath = Key<Bool>("copyImageFilePath", default: true)
     static let enablePhotosIntegration = Key<Bool>("enablePhotosIntegration", default: true)
     static let maxCopiedPhotosCount = Key<Int>("maxCopiedPhotosCount", default: 5)
@@ -159,7 +165,7 @@ extension Defaults.Keys {
     static let pauseAutomaticOptimisations = Key<Bool>("pauseAutomaticOptimisations", default: false)
     static let presetZones = Key<[PresetZone]>("presetZones", default: [])
 
-    static let syncSettingsCloud = Key<Bool>("syncSettingsCloud", default: true)
+    static let syncSettingsCloud = Key<Bool>("syncSettingsCloud", default: false)
     static let allowClopToAppearInScreenshots = Key<Bool>("allowClopToAppearInScreenshots", default: false)
 }
 
@@ -282,6 +288,10 @@ let SETTINGS_TO_SYNC: [Defaults._AnyKey] = [
     .useCustomNameTemplateForClipboardImages,
     .videoDirs,
     .videoFormatsToSkip,
+    .autoResizeClipboardImages,
+    .clipboardMaxWidth,
+    .clipboardMaxHeight,
+    .autoConvertClipboardToWebP,
 ] + ARM64_SPECIFIC_SETTINGS
 
 #if arch(arm64)

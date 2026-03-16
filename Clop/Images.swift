@@ -856,6 +856,9 @@ class Image: CustomStringConvertible {
             img = try optimiseGIF(optimiser: optimiser, aggressiveOptimisation: aggressiveOptimisation)
         case .tiff:
             img = try optimiseTIFF(optimiser: optimiser, aggressiveOptimisation: aggressiveOptimisation, adaptiveSize: adaptiveSize)
+        case .webP:
+            // WebP is already compressed by cwebp during conversion
+            throw ClopError.imageSizeLarger(path)
         default:
             throw ClopError.unknownImageType(path)
         }
@@ -1244,7 +1247,46 @@ extension FilePath {
 
     // let shouldDownscale = Defaults[.downscaleRetinaImages] && img.pixelScale > 1
 
-    let conversionFormat: UTType? = Defaults[.formatsToConvertToJPEG].contains(img.type) ? .jpeg : (Defaults[.formatsToConvertToPNG].contains(img.type) ? .png : nil)
+    // MARK: - Auto resize clipboard images to max dimensions (Ziben custom)
+    if source == .clipboard, Defaults[.autoResizeClipboardImages] {
+        let maxW = CGFloat(Defaults[.clipboardMaxWidth])
+        let maxH = CGFloat(Defaults[.clipboardMaxHeight])
+        let imgWidth = img.size.width
+        let imgHeight = img.size.height
+
+        if imgWidth > maxW || imgHeight > maxH {
+            let scaleW = maxW / imgWidth
+            let scaleH = maxH / imgHeight
+            let scale = min(scaleW, scaleH)
+            let newWidth = Int((imgWidth * scale).rounded(.down))
+            let newHeight = Int((imgHeight * scale).rounded(.down))
+            let targetSize = CropSize(width: newWidth, height: newHeight)
+
+            log.debug("Auto-resizing clipboard image from \(imgWidth.i)x\(imgHeight.i) to \(newWidth)x\(newHeight)")
+
+            let optimiserForResize = OM.optimiser(
+                id: id ?? pathString, type: .image(img.type),
+                operation: "Resizing to \(newWidth)x\(newHeight)",
+                hidden: hideFloatingResult, source: source, indeterminateProgress: true
+            )
+            img = try img.resize(toSize: targetSize, optimiser: optimiserForResize, aggressiveOptimisation: aggressiveOptimisation, adaptiveSize: false)
+            pathString = img.path.string
+            allowLarger = true
+        }
+    }
+
+    // MARK: - Auto convert clipboard images to WebP (Ziben custom)
+    let conversionFormat: UTType? =
+        if source == .clipboard, Defaults[.autoConvertClipboardToWebP], img.type != .webP {
+            UTType.webP
+        } else if Defaults[.formatsToConvertToJPEG].contains(img.type) {
+            .jpeg
+        } else if Defaults[.formatsToConvertToPNG].contains(img.type) {
+            .png
+        } else {
+            nil
+        }
+
     if let conversionFormat {
         let converted = try img.convert(to: conversionFormat, asTempFile: true)
 
