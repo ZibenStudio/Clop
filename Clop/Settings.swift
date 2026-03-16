@@ -62,7 +62,7 @@ extension Defaults.Keys {
 
     static let optimiseTIFF = Key<Bool>("optimiseTIFF", default: true)
     static let enableClipboardOptimiser = Key<Bool>("enableClipboardOptimiser", default: true)
-    static let optimiseVideoClipboard = Key<Bool>("optimiseVideoClipboard", default: false)
+    static let optimiseVideoClipboard = Key<Bool>("optimiseVideoClipboard", default: true)
     static let optimiseImagePathClipboard = Key<Bool>("optimiseImagePathClipboard", default: false)
     static let stripMetadata = Key<Bool>("stripMetadata", default: true)
     static let preserveDates = Key<Bool>("preserveDates", default: true)
@@ -127,6 +127,19 @@ extension Defaults.Keys {
     static let clipboardMaxWidth = Key<Int>("clipboardMaxWidth", default: 2560)
     static let clipboardMaxHeight = Key<Int>("clipboardMaxHeight", default: 1440)
     static let autoConvertClipboardToWebP = Key<Bool>("autoConvertClipboardToWebP", default: true)
+    static let clipboardImageQuality = Key<Int>("clipboardImageQuality", default: 60)
+    static let activeImagePreset = Key<String>("activeImagePreset", default: "chat")
+
+    // MARK: - Auto resize & optimize videos (Ziben custom)
+    static let autoResizeClipboardVideos = Key<Bool>("autoResizeClipboardVideos", default: true)
+    static let clipboardVideoMaxWidth = Key<Int>("clipboardVideoMaxWidth", default: 2560)
+    static let clipboardVideoMaxHeight = Key<Int>("clipboardVideoMaxHeight", default: 1440)
+    static let useHEVCForClipboardVideos = Key<Bool>("useHEVCForClipboardVideos", default: true)
+    static let clipboardVideoFPSCap = Key<Int>("clipboardVideoFPSCap", default: 30)
+    static let stripAudioFromClipboardVideos = Key<Bool>("stripAudioFromClipboardVideos", default: false)
+    static let clipboardVideoQuality = Key<Int>("clipboardVideoQuality", default: 55)
+    static let activeVideoPreset = Key<String>("activeVideoPreset", default: "web")
+
     static let copyImageFilePath = Key<Bool>("copyImageFilePath", default: true)
     static let enablePhotosIntegration = Key<Bool>("enablePhotosIntegration", default: true)
     static let maxCopiedPhotosCount = Key<Int>("maxCopiedPhotosCount", default: 5)
@@ -195,6 +208,80 @@ let DEFAULT_CROP_ASPECT_RATIOS: [CropSize] = [
     CropSize(width: 14, height: 9, name: "14:9", isAspectRatio: true),
     CropSize(width: 32, height: 9, name: "32:9", isAspectRatio: true),
     CropSize(width: 176, height: 250, name: "B5", isAspectRatio: true),
+]
+
+// MARK: - Image Presets (Ziben custom)
+
+struct ImagePreset {
+    let name: String
+    let maxWidth: Int
+    let maxHeight: Int
+    let quality: Int        // cwebp -q value (0-100, higher = better quality)
+    let convertToWebP: Bool
+}
+
+let IMAGE_PRESETS: [String: ImagePreset] = [
+    "web": ImagePreset(
+        name: "Web",
+        maxWidth: 2560, maxHeight: 1440,
+        quality: 80, convertToWebP: true
+    ),
+    "chat": ImagePreset(
+        name: "Chat",
+        maxWidth: 1920, maxHeight: 1080,
+        quality: 60, convertToWebP: true
+    ),
+    "compact": ImagePreset(
+        name: "Compact",
+        maxWidth: 1280, maxHeight: 720,
+        quality: 50, convertToWebP: true
+    ),
+    "quality": ImagePreset(
+        name: "Quality",
+        maxWidth: 0, maxHeight: 0,  // 0 = no resize
+        quality: 90, convertToWebP: true
+    ),
+]
+
+// MARK: - Video Presets (Ziben custom)
+
+struct VideoPreset {
+    let name: String
+    let maxWidth: Int
+    let maxHeight: Int
+    let fpsCap: Int
+    let useHEVC: Bool
+    let quality: Int        // VideoToolbox q:v (lower = better quality)
+    let stripAudio: Bool
+    let audioCodec: String  // "copy", "aac", "strip"
+    let audioBitrate: String
+}
+
+let VIDEO_PRESETS: [String: VideoPreset] = [
+    "screencast": VideoPreset(
+        name: "Screencast",
+        maxWidth: 1920, maxHeight: 1080,
+        fpsCap: 30, useHEVC: true, quality: 50,
+        stripAudio: true, audioCodec: "strip", audioBitrate: ""
+    ),
+    "web": VideoPreset(
+        name: "Web",
+        maxWidth: 2560, maxHeight: 1440,
+        fpsCap: 30, useHEVC: true, quality: 55,
+        stripAudio: false, audioCodec: "aac", audioBitrate: "128k"
+    ),
+    "compact": VideoPreset(
+        name: "Compact",
+        maxWidth: 1280, maxHeight: 720,
+        fpsCap: 30, useHEVC: true, quality: 65,
+        stripAudio: true, audioCodec: "strip", audioBitrate: ""
+    ),
+    "quality": VideoPreset(
+        name: "Quality",
+        maxWidth: 0, maxHeight: 0,  // 0 = no resize
+        fpsCap: 60, useHEVC: false, quality: 40,
+        stripAudio: false, audioCodec: "copy", audioBitrate: ""
+    ),
 ]
 
 public enum ConvertedFileBehaviour: String, Defaults.Serializable {
@@ -292,6 +379,12 @@ let SETTINGS_TO_SYNC: [Defaults._AnyKey] = [
     .clipboardMaxWidth,
     .clipboardMaxHeight,
     .autoConvertClipboardToWebP,
+    .autoResizeClipboardVideos,
+    .clipboardVideoMaxWidth,
+    .clipboardVideoMaxHeight,
+    .useHEVCForClipboardVideos,
+    .clipboardVideoFPSCap,
+    .stripAudioFromClipboardVideos,
 ] + ARM64_SPECIFIC_SETTINGS
 
 #if arch(arm64)

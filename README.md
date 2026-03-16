@@ -80,6 +80,40 @@ After the **14-day trial**, the app will continue to work with the free features
 | Shortcuts support | ✅ | 5 per session |
 
 
+## Ziben Custom Features
+
+This fork adds automatic optimization presets for clipboard images and videos.
+
+### Image Presets
+
+| Preset | Resolution max | Format | Quality | Usage |
+|--------|---------------|--------|---------|-------|
+| **Chat** (default) | 1920x1080 | WebP | 60 | Discord, Teams, Claude Code |
+| **Web** | 2560x1440 | WebP | 80 | Sites web, Odoo, contenu public |
+| **Compact** | 1280x720 | WebP | 50 | Email, threads longs |
+| **Quality** | No resize | WebP | 90 | Préserver le détail |
+
+### Video Presets
+
+| Preset | Resolution max | FPS | Codec | Quality | Audio | Usage |
+|--------|---------------|-----|-------|---------|-------|-------|
+| **Web** (default) | 2560x1440 | 30 | H.265 | 55 | AAC 128k | Présentations, partage |
+| **Screencast** | 1920x1080 | 30 | H.265 | 50 | Strip | Démos, tutos, UI |
+| **Compact** | 1280x720 | 30 | H.265 | 65 | Strip | Email, messaging |
+| **Quality** | No resize | 60 | H.264 | 40 | Copy | Préserver l'original |
+
+### Changing presets
+
+```bash
+# Image presets: chat (default), web, compact, quality
+defaults write com.ziben.Clop activeImagePreset -string "web"
+
+# Video presets: web (default), screencast, compact, quality
+defaults write com.ziben.Clop activeVideoPreset -string "screencast"
+```
+
+Restart Clop after changing a preset.
+
 ## Technical details
 
 Clop uses the following open source tools for optimising files, images and videos:

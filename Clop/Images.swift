@@ -991,11 +991,14 @@ class Image: CustomStringConvertible {
     }
 
     private func conversionArgs(to format: String, outPath: FilePath) -> [String] {
+        // Use preset quality for WebP if available (Ziben custom)
+        let webpQuality = IMAGE_PRESETS[Defaults[.activeImagePreset]]?.quality ?? 60
+
         switch format {
-        case "avif": ["--avif", "-q", "60", "-o", outPath.string, path.string]
-        case "heic": ["-q", "60", "-o", outPath.string, path.string]
-        case "webp": ["-mt", "-q", "60", "-sharp_yuv", "-metadata", "all", path.string, "-o", outPath.string]
-        default: []
+        case "avif": return ["--avif", "-q", "60", "-o", outPath.string, path.string]
+        case "heic": return ["-q", "60", "-o", outPath.string, path.string]
+        case "webp": return ["-mt", "-q", "\(webpQuality)", "-sharp_yuv", "-metadata", "all", path.string, "-o", outPath.string]
+        default: return []
         }
     }
     private func conversionExecutable(to format: String) -> String {
@@ -1247,10 +1250,11 @@ extension FilePath {
 
     // let shouldDownscale = Defaults[.downscaleRetinaImages] && img.pixelScale > 1
 
-    // MARK: - Auto resize clipboard images to max dimensions (Ziben custom)
-    if source == .clipboard, Defaults[.autoResizeClipboardImages] {
-        let maxW = CGFloat(Defaults[.clipboardMaxWidth])
-        let maxH = CGFloat(Defaults[.clipboardMaxHeight])
+    // MARK: - Auto resize & convert clipboard images with preset (Ziben custom)
+    if source == .clipboard, Defaults[.autoResizeClipboardImages],
+       let preset = IMAGE_PRESETS[Defaults[.activeImagePreset]] {
+        let maxW = preset.maxWidth > 0 ? CGFloat(preset.maxWidth) : CGFloat.infinity
+        let maxH = preset.maxHeight > 0 ? CGFloat(preset.maxHeight) : CGFloat.infinity
         let imgWidth = img.size.width
         let imgHeight = img.size.height
 
@@ -1262,7 +1266,7 @@ extension FilePath {
             let newHeight = Int((imgHeight * scale).rounded(.down))
             let targetSize = CropSize(width: newWidth, height: newHeight)
 
-            log.debug("Auto-resizing clipboard image from \(imgWidth.i)x\(imgHeight.i) to \(newWidth)x\(newHeight)")
+            log.debug("[\(preset.name)] Auto-resizing clipboard image from \(imgWidth.i)x\(imgHeight.i) to \(newWidth)x\(newHeight)")
 
             let optimiserForResize = OM.optimiser(
                 id: id ?? pathString, type: .image(img.type),

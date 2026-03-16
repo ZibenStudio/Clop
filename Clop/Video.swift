@@ -206,7 +206,10 @@ class Video: Optimisable {
         changePlaybackSpeedBy changePlaybackSpeedFactor: Double? = nil,
         originalPath: FilePath? = nil,
         aggressiveOptimisation: Bool? = nil,
-        removeAudio: Bool? = nil
+        removeAudio: Bool? = nil,
+        useHEVC: Bool = false,
+        fpsCapOverride: Int? = nil,
+        qualityOverride: Int? = nil
     ) throws -> Video {
         log.debug("Optimising video \(path.string)")
         guard let name = path.lastComponent else {
@@ -222,7 +225,11 @@ class Video: Optimisable {
         var additionalArgs = [String]()
 
         var newFPS = fps
-        if Defaults[.capVideoFPS] {
+        if let fpsCapOverride {
+            // Ziben custom: clipboard FPS cap override
+            newFPS = Float(fpsCapOverride)
+            additionalArgs += ["-fpsmax", "\(fpsCapOverride)"]
+        } else if Defaults[.capVideoFPS] {
             newFPS = Defaults[.targetVideoFPS]
             if newFPS == -2, let fps {
                 newFPS = max(fps / 2, Defaults[.minVideoFPS])
@@ -253,11 +260,25 @@ class Video: Optimisable {
         let aggressive = aggressiveOptimisation ?? Defaults[.useAggressiveOptimisationMP4]
         mainActor { optimiser.aggressive = aggressive }
         #if arch(arm64)
-            let encoderArgs = useAggressiveOptimisation(aggressiveSetting: aggressiveOptimisation ?? false)
-                ? ["-vcodec", "h264", "-tag:v", "avc1"] + (aggressive ? ["-preset", "slower", "-crf", "26"] : [])
-                : ["-vcodec", "h264_videotoolbox", "-q:v", "45", "-tag:v", "avc1"]
+            let encoderArgs: [String]
+            if useHEVC {
+                // HEVC hardware encoding via VideoToolbox (Ziben custom)
+                let hevcQuality = qualityOverride ?? 55
+                encoderArgs = useAggressiveOptimisation(aggressiveSetting: aggressiveOptimisation ?? false)
+                    ? ["-vcodec", "libx265", "-crf", "28", "-preset", "medium", "-tag:v", "hvc1"]
+                    : ["-vcodec", "hevc_videotoolbox", "-q:v", "\(hevcQuality)", "-tag:v", "hvc1"]
+            } else {
+                encoderArgs = useAggressiveOptimisation(aggressiveSetting: aggressiveOptimisation ?? false)
+                    ? ["-vcodec", "h264", "-tag:v", "avc1"] + (aggressive ? ["-preset", "slower", "-crf", "26"] : [])
+                    : ["-vcodec", "h264_videotoolbox", "-q:v", "45", "-tag:v", "avc1"]
+            }
         #else
-            let encoderArgs = ["-vcodec", "h264", "-tag:v", "avc1"] + (aggressive ? ["-preset", "slower", "-crf", "26"] : [])
+            let encoderArgs: [String]
+            if useHEVC {
+                encoderArgs = ["-vcodec", "libx265", "-crf", "28", "-preset", "medium", "-tag:v", "hvc1"]
+            } else {
+                encoderArgs = ["-vcodec", "h264", "-tag:v", "avc1"] + (aggressive ? ["-preset", "slower", "-crf", "26"] : [])
+            }
         #endif
         let audioArgs: [String] = if audioRemoved {
             ["-an"]
@@ -607,11 +628,46 @@ var processTerminated = Set<pid_t>()
                     mainActor { OM.current = optimiser }
                 }
 
+                // MARK: - Auto resize & HEVC for clipboard videos (Ziben custom)
+                var clipboardResizeSize: CGSize? = nil
+                var clipboardUseHEVC = false
+                var clipboardRemoveAudio = removeAudio
+                var clipboardFPSCap: Int? = nil
+
+                if source == .clipboard, let preset = VIDEO_PRESETS[Defaults[.activeVideoPreset]] {
+                    // Apply preset settings
+                    if preset.maxWidth > 0, preset.maxHeight > 0, let videoSize = video.size {
+                        let maxW = CGFloat(preset.maxWidth)
+                        let maxH = CGFloat(preset.maxHeight)
+                        if videoSize.width > maxW || videoSize.height > maxH {
+                            let scaleW = maxW / videoSize.width
+                            let scaleH = maxH / videoSize.height
+                            let scale = min(scaleW, scaleH)
+                            let newW = Int((videoSize.width * scale).rounded(.down))
+                            let newH = Int((videoSize.height * scale).rounded(.down))
+                            // Ensure even dimensions (required by most codecs)
+                            clipboardResizeSize = CGSize(width: newW - (newW % 2), height: newH - (newH % 2))
+                            log.debug("[\(preset.name)] Auto-resizing clipboard video from \(videoSize.width.i)x\(videoSize.height.i) to \(newW)x\(newH)")
+                        }
+                    }
+                    clipboardUseHEVC = preset.useHEVC
+                    clipboardFPSCap = preset.fpsCap
+                    if preset.stripAudio {
+                        clipboardRemoveAudio = true
+                    }
+                }
+
+                let presetQuality = VIDEO_PRESETS[Defaults[.activeVideoPreset]]?.quality
+
                 optimisedVideo = try video.optimise(
                     optimiser: optimiser,
                     forceMP4: !noConversion && Defaults[.formatsToConvertToMP4].contains(itemType.utType ?? .mpeg4Movie),
+                    resizeTo: clipboardResizeSize,
                     aggressiveOptimisation: aggressiveOptimisation,
-                    removeAudio: removeAudio
+                    removeAudio: clipboardRemoveAudio,
+                    useHEVC: clipboardUseHEVC,
+                    fpsCapOverride: clipboardFPSCap,
+                    qualityOverride: source == .clipboard ? presetQuality : nil
                 )
                 if optimisedVideo!.path.extension == video.path.extension, optimisedVideo!.path != video.path {
                     let path = try optimisedVideo!.path.move(to: video.path, force: true)
