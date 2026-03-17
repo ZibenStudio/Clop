@@ -1,0 +1,29 @@
+<?xml version="1.0" standalone="yes"?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" xmlns:dc="http://purl.org/dc/elements/1.1/" version="2.0">
+    <channel>
+        <title>Clop Ziben</title>
+        <item>
+            <title>Clop Ziben v3.0.0</title>
+            <pubDate>Mon, 17 Mar 2026 09:00:00 +0100</pubDate>
+            <sparkle:version>3.0.0</sparkle:version>
+            <sparkle:shortVersionString>3.0.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <description><![CDATA[
+                <h2>Clop Ziben v3.0.0</h2>
+                <ul>
+                    <li>Image & video optimization presets (Chat, Web, Compact, Quality)</li>
+                    <li>Preset selector in menu bar</li>
+                    <li>Auto-resize + WebP conversion for images</li>
+                    <li>H.265 hardware encoding for videos (Apple Silicon)</li>
+                    <li>Presets apply to Watch paths (Desktop/Downloads)</li>
+                    <li>Comparison (Cmd+D) shows original vs optimised correctly</li>
+                    <li>Auto-update via Sparkle</li>
+                </ul>
+            ]]></description>
+            <enclosure url="https://github.com/ZibenStudio/Clop/releases/download/v3.0.0/Clop-Ziben-3.0.0.dmg"
+                       type="application/octet-stream"
+                       sparkle:edSignature="xCUciMDp1j/D2X/xVdyNv4hNzJ/tKRHu19wBZKCP9RQNcBTrgXIwX6VFeaguixc71S9xrtynnVrTTW2YuTyODw=="
+                       length="96571521"/>
+        </item>
+    </channel>
+</rss>

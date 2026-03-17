@@ -307,7 +307,7 @@
 		</dict>
 	</array>
 	<key>SUFeedURL</key>
-	<string>https://raw.githubusercontent.com/ZibenStudio/clop-appcast/main/appcast.xml</string>
+	<string>https://raw.githubusercontent.com/ZibenStudio/Clop/main/appcast.xml</string>
 	<key>SUPublicEDKey</key>
 	<string>j9O9QqUBlJVJ/KOHdcs6qUKC0Gen+pMgxJUBIr+l7Jg=</string>
 </dict>
