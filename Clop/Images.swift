@@ -1250,6 +1250,9 @@ extension FilePath {
 
     // let shouldDownscale = Defaults[.downscaleRetinaImages] && img.pixelScale > 1
 
+    // Save original path before any preset modifications for comparison (Ziben custom)
+    let prePresetOriginalPath = img.path
+
     // MARK: - Auto resize & convert images with preset (Ziben custom)
     // Apply presets to clipboard AND watched folder sources
     let isPresetSource: Bool = {
@@ -1335,7 +1338,8 @@ extension FilePath {
         scalingFactor = 1.0
         optimiser.stop(remove: false)
         optimiser.operation = (Defaults[.showImages] ? "Optimising" : "Optimising \(optimiser.filename)") + (aggressiveOptimisation ?? false ? " (aggressive)" : "")
-        optimiser.originalURL = img.path.backup(path: img.path.clopBackupPath, force: false, operation: .copy)?.url ?? img.path.url
+        // Use pre-preset path for comparison so original (e.g. PNG) is compared against optimised (e.g. WebP)
+        optimiser.originalURL = prePresetOriginalPath.backup(path: prePresetOriginalPath.clopBackupPath, force: false, operation: .copy)?.url ?? prePresetOriginalPath.url
         optimiser.url = img.path.url
         if id == Optimiser.IDs.clipboardImage {
             optimiser.startingURL = optimiser.url
