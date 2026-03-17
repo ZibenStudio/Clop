@@ -1250,8 +1250,16 @@ extension FilePath {
 
     // let shouldDownscale = Defaults[.downscaleRetinaImages] && img.pixelScale > 1
 
-    // MARK: - Auto resize & convert clipboard images with preset (Ziben custom)
-    if source == .clipboard, Defaults[.autoResizeClipboardImages],
+    // MARK: - Auto resize & convert images with preset (Ziben custom)
+    // Apply presets to clipboard AND watched folder sources
+    let isPresetSource: Bool = {
+        guard let source else { return false }
+        if source == .clipboard { return true }
+        if case .dir = source { return true }
+        return false
+    }()
+
+    if isPresetSource, Defaults[.autoResizeClipboardImages],
        let preset = IMAGE_PRESETS[Defaults[.activeImagePreset]] {
         let maxW = preset.maxWidth > 0 ? CGFloat(preset.maxWidth) : CGFloat.infinity
         let maxH = preset.maxHeight > 0 ? CGFloat(preset.maxHeight) : CGFloat.infinity
@@ -1279,9 +1287,9 @@ extension FilePath {
         }
     }
 
-    // MARK: - Auto convert clipboard images to WebP (Ziben custom)
+    // MARK: - Auto convert images to WebP (Ziben custom)
     let conversionFormat: UTType? =
-        if source == .clipboard, Defaults[.autoConvertClipboardToWebP], img.type != .webP {
+        if isPresetSource, Defaults[.autoConvertClipboardToWebP], img.type != .webP {
             UTType.webP
         } else if Defaults[.formatsToConvertToJPEG].contains(img.type) {
             .jpeg

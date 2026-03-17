@@ -307,8 +307,8 @@
 		</dict>
 	</array>
 	<key>SUFeedURL</key>
-	<string>https://files.lowtechguys.com/clop/appcast.xml</string>
+	<string>https://raw.githubusercontent.com/ZibenStudio/clop-appcast/main/appcast.xml</string>
 	<key>SUPublicEDKey</key>
-	<string>lqnO6tg2A9evTIFo2SC9ArZ6NS84gtBshcAWdwh12xQ=</string>
+	<string>j9O9QqUBlJVJ/KOHdcs6qUKC0Gen+pMgxJUBIr+l7Jg=</string>
 </dict>
 </plist>

@@ -628,13 +628,21 @@ var processTerminated = Set<pid_t>()
                     mainActor { OM.current = optimiser }
                 }
 
-                // MARK: - Auto resize & HEVC for clipboard videos (Ziben custom)
+                // MARK: - Auto resize & HEVC for videos (Ziben custom)
+                // Apply presets to clipboard AND watched folder sources
+                let isVideoPresetSource: Bool = {
+                    guard let source else { return false }
+                    if source == .clipboard { return true }
+                    if case .dir = source { return true }
+                    return false
+                }()
+
                 var clipboardResizeSize: CGSize? = nil
                 var clipboardUseHEVC = false
                 var clipboardRemoveAudio = removeAudio
                 var clipboardFPSCap: Int? = nil
 
-                if source == .clipboard, let preset = VIDEO_PRESETS[Defaults[.activeVideoPreset]] {
+                if isVideoPresetSource, let preset = VIDEO_PRESETS[Defaults[.activeVideoPreset]] {
                     // Apply preset settings
                     if preset.maxWidth > 0, preset.maxHeight > 0, let videoSize = video.size {
                         let maxW = CGFloat(preset.maxWidth)
