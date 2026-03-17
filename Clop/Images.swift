@@ -144,6 +144,8 @@ extension UTType {
             .gif
         case .pdf:
             .pdf
+        case .webP:
+            .webp
         default:
             .png
         }
@@ -1250,8 +1252,15 @@ extension FilePath {
 
     // let shouldDownscale = Defaults[.downscaleRetinaImages] && img.pixelScale > 1
 
-    // Save original path before any preset modifications for comparison (Ziben custom)
+    // Save original image data before any preset modifications for comparison (Ziben custom)
     let prePresetOriginalPath = img.path
+    let prePresetOriginalSize = img.data.count
+    let prePresetOriginalDimensions = img.size
+    // Backup original immediately while the file still exists
+    let prePresetBackupURL: URL? = {
+        guard let backupPath = prePresetOriginalPath.clopBackupPath else { return nil }
+        return prePresetOriginalPath.backup(path: backupPath, force: true, operation: .copy)?.url
+    }()
 
     // MARK: - Auto resize & convert images with preset (Ziben custom)
     // Apply presets to clipboard AND watched folder sources
@@ -1318,6 +1327,11 @@ extension FilePath {
         operation: "Optimising" + (aggressiveOptimisation ?? false ? " (aggressive)" : ""),
         hidden: hideFloatingResult, source: source, indeterminateProgress: true
     )
+    // Fix: OM.optimiser() recycles existing optimiser without updating type
+    if optimiser.type != .image(img.type) {
+        log.debug("[Ziben] Updating recycled optimiser type from \(optimiser.type) to \(img.type.identifier)")
+        optimiser.type = .image(img.type)
+    }
     if !hideFloatingResult {
         optimiser.thumbnail = img.image
     }
@@ -1338,8 +1352,12 @@ extension FilePath {
         scalingFactor = 1.0
         optimiser.stop(remove: false)
         optimiser.operation = (Defaults[.showImages] ? "Optimising" : "Optimising \(optimiser.filename)") + (aggressiveOptimisation ?? false ? " (aggressive)" : "")
-        // Use pre-preset path for comparison so original (e.g. PNG) is compared against optimised (e.g. WebP)
-        optimiser.originalURL = prePresetOriginalPath.backup(path: prePresetOriginalPath.clopBackupPath, force: false, operation: .copy)?.url ?? prePresetOriginalPath.url
+        // Use pre-preset backup for comparison so original (e.g. PNG) is compared against optimised (e.g. WebP)
+        if let prePresetBackupURL {
+            optimiser.originalURL = prePresetBackupURL
+        } else {
+            optimiser.originalURL = img.path.backup(path: img.path.clopBackupPath, force: false, operation: .copy)?.url ?? img.path.url
+        }
         optimiser.url = img.path.url
         if id == Optimiser.IDs.clipboardImage {
             optimiser.startingURL = optimiser.url
@@ -1429,9 +1447,12 @@ extension FilePath {
                 if !hideFloatingResult {
                     OM.current = optimiser
                 }
+                // Use pre-preset original values if available (Ziben custom)
+                let effectiveOldBytes = prePresetBackupURL != nil ? prePresetOriginalSize : img.data.count
+                let effectiveOldSize = prePresetBackupURL != nil ? prePresetOriginalDimensions : img.size
                 optimiser.finish(
-                    oldBytes: img.data.count, newBytes: newBytes,
-                    oldSize: img.size, newSize: newSize,
+                    oldBytes: effectiveOldBytes, newBytes: newBytes,
+                    oldSize: effectiveOldSize, newSize: newSize,
                     removeAfterMs: id == Optimiser.IDs.clipboardImage ? hideClipboardAfter : hideFilesAfter
                 )
 
