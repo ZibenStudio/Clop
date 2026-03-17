@@ -82,6 +82,23 @@
 			<key>IsIncoming</key>
 			<false/>
 			<key>Host</key>
+			<string>cdn.jsdelivr.net, raw.githubusercontent.com, github.com, objects.githubusercontent.com</string>
+			<key>NetworkProtocol</key>
+			<string>TCP</string>
+			<key>Port</key>
+			<string>443</string>
+			<key>Relevance</key>
+			<string>Essential</string>
+			<key>Purpose</key>
+			<string>Check for updates and download new versions via Sparkle.</string>
+			<key>DenyConsequences</key>
+			<string>If you deny these connections, automatic updates will not work.</string>
+		</dict>
+
+		<dict>
+			<key>IsIncoming</key>
+			<false/>
+			<key>Host</key>
 			<string>o84592.ingest.sentry.io, sentry.io</string>
 			<key>NetworkProtocol</key>
 			<string>TCP</string>

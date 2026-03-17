@@ -1922,12 +1922,9 @@ import LowtechPro
 @discardableResult @inline(__always)
 @MainActor func proGuard<T>(count: inout Int, limit: Int = 5, url: URL? = nil, _ action: @escaping () async throws -> T) async throws -> T {
     guard !BM.decompressingBinaries else { throw ClopError.decompressingBinariesError }
-    guard proactive || count < limit, meetsInternalRequirements() else {
-        if let url {
-            OM.skippedBecauseNotPro = OM.skippedBecauseNotPro.with(url)
-        }
-        proLimitsReached(url: url)
-        throw ClopError.proError("Pro limits reached")
+    // Ziben custom: bypass Pro limits
+    guard meetsInternalRequirements() else {
+        throw ClopError.proError("Internal requirements not met")
     }
     let result = try await action()
     count += 1
