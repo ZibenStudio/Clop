@@ -811,7 +811,7 @@ class Image: CustomStringConvertible {
         return try resize(toSize: size, optimiser: optimiser, aggressiveOptimisation: aggressiveOptimisation, adaptiveSize: adaptiveSize)
     }
 
-    func resize(toSize cropSize: CropSize, optimiser: Optimiser, aggressiveOptimisation: Bool? = nil, adaptiveSize: Bool = false) throws -> Image {
+    func resize(toSize cropSize: CropSize, optimiser: Optimiser, aggressiveOptimisation: Bool? = nil, adaptiveSize: Bool = false, skipOptimisation: Bool = false) throws -> Image {
         let pathForResize = FilePath.forResize.appending(path.nameWithoutSize)
         if path != pathForResize {
             try path.copy(to: pathForResize, force: true)
@@ -839,6 +839,10 @@ class Image: CustomStringConvertible {
 
         guard let pbImage = Image(path: pathForResize, optimised: false, retinaDownscaled: retinaDownscaled) else {
             throw ClopError.downscaleFailed(pathForResize)
+        }
+        // Skip lossy compression (pngquant/jpegoptim) when the image will be converted to another format right after (Ziben custom)
+        if skipOptimisation {
+            return pbImage
         }
         return try pbImage.optimise(optimiser: optimiser, allowLarger: true, aggressiveOptimisation: aggressiveOptimisation, adaptiveSize: adaptiveSize)
     }
@@ -1271,6 +1275,10 @@ extension FilePath {
         return false
     }()
 
+    // Skip lossy compression during resize when WebP conversion will follow or image is already WebP (Ziben custom)
+    let willConvertToWebP = isPresetSource && Defaults[.autoConvertClipboardToWebP] && img.type != .webP
+    let skipOptimisationAfterResize = willConvertToWebP || img.type == .webP
+
     if isPresetSource, Defaults[.autoResizeClipboardImages],
        let preset = IMAGE_PRESETS[Defaults[.activeImagePreset]] {
         let maxW = preset.maxWidth > 0 ? CGFloat(preset.maxWidth) : CGFloat.infinity
@@ -1293,17 +1301,25 @@ extension FilePath {
                 operation: "Resizing to \(newWidth)x\(newHeight)",
                 hidden: hideFloatingResult, source: source, indeterminateProgress: true
             )
-            img = try img.resize(toSize: targetSize, optimiser: optimiserForResize, aggressiveOptimisation: aggressiveOptimisation, adaptiveSize: false)
-            pathString = img.path.string
-            allowLarger = true
+            do {
+                img = try img.resize(toSize: targetSize, optimiser: optimiserForResize, aggressiveOptimisation: aggressiveOptimisation, adaptiveSize: false, skipOptimisation: skipOptimisationAfterResize)
+                pathString = img.path.string
+                allowLarger = true
+            } catch {
+                log.error("[\(preset.name)] Preset resize failed, continuing without resize: \(error)")
+                optimiserForResize.finish(error: "Resize failed")
+                optimiserForResize.remove(after: 3000, withAnimation: true)
+            }
         }
     }
 
     // MARK: - Auto convert images to WebP (Ziben custom)
+    // When autoConvertClipboardToWebP is on and source is preset, don't convert WebP to JPEG (Ziben custom)
+    let skipJpegConversionForWebP = isPresetSource && Defaults[.autoConvertClipboardToWebP] && img.type == .webP
     let conversionFormat: UTType? =
         if isPresetSource, Defaults[.autoConvertClipboardToWebP], img.type != .webP {
             UTType.webP
-        } else if Defaults[.formatsToConvertToJPEG].contains(img.type) {
+        } else if !skipJpegConversionForWebP, Defaults[.formatsToConvertToJPEG].contains(img.type) {
             .jpeg
         } else if Defaults[.formatsToConvertToPNG].contains(img.type) {
             .png
