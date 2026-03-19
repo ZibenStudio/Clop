@@ -876,10 +876,7 @@ class AppDelegate: AppDelegateParent {
                 pauseForNextClipboardEvent = false
                 return
             }
-            // Allow transient clipboard items through if they contain image data (e.g. Raycast screenshots) (Ziben custom)
-            let imageTypes: Set<NSPasteboard.PasteboardType> = [.png, .jpeg, .tiff, .init("com.compuserve.gif"), .init("org.webmproject.webp")]
-            guard let item = NSPasteboard.general.pasteboardItems?.first, item.string(forType: .optimisationStatus) == nil,
-                  !TRANSIENT_TYPES.hasElements(from: Set(item.types)) || !imageTypes.isDisjoint(with: Set(item.types)) else {
+            guard let item = NSPasteboard.general.pasteboardItems?.first, item.string(forType: .optimisationStatus) == nil, !TRANSIENT_TYPES.hasElements(from: Set(item.types)) else {
                 return
             }
 
