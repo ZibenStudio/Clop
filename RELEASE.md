@@ -76,6 +76,7 @@ gh release create vX.Y.Z ~/Desktop/Clop-Ziben-X.Y.Z.dmg --title "Clop Ziben vX.Y
 
 ```bash
 pkill -x Clop; sleep 1
+rm -rf /Applications/Clop.app
 cp -R ~/Library/Developer/Xcode/DerivedData/Clop-*/Build/Products/Release/Clop.app /Applications/Clop.app
 open /Applications/Clop.app
 ```
@@ -86,3 +87,5 @@ open /Applications/Clop.app
 - GitHub account must be **MathisFr63** (`gh auth switch --user MathisFr63`)
 - DMG folder must contain only ONE Clop.app (use a fresh `/tmp/` folder each time)
 - Sparkle appcast is public at `ZibenStudio/clop-appcast`
+- **NEVER use `cp -Rf source/ dest/` (trailing slash)** — it breaks the code signature. Always `rm -rf` then `cp -R` without trailing slash
+- **NEVER modify Info.plist with plutil post-install** — SUFeedURL is already set in the source Info.plist. Modifying it breaks the code signature and Sparkle silently refuses updates
