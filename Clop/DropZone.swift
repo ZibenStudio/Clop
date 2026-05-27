@@ -109,9 +109,7 @@ struct DropZonePresetsViewDelegate: DropDelegate {
             return false
         }
 
-        if DM.optimisationCount == 5 {
-            DM.optimisationCount += 1
-        }
+        // Ziben custom: removed Pro free-limit counter bump
         return optimiseDroppedItems(info.itemProviders(for: IMAGE_FORMATS + VIDEO_FORMATS + [.plainText, .utf8PlainText, .url, .fileURL, .aliasFile, .pdf]), copy: NSEvent.modifierFlags.contains(.option), preset: preset)
     }
 }
@@ -453,9 +451,7 @@ extension DropZoneView: DropDelegate {
     func performDrop(info: DropInfo) -> Bool {
         dragManager.dragHovering = false
         dragManager.dropped = true
-        if dragManager.optimisationCount == 5 {
-            dragManager.optimisationCount += 1
-        }
+        // Ziben custom: removed Pro free-limit counter bump
 
         let thumbnails: [NSItemProvider] = info.hasItemsConforming(to: VIDEO_FORMATS) ? info.itemProviders(for: IMAGE_FORMATS) : []
         let filenames: [NSItemProvider] = info.itemProviders(for: [.url, .fileURL, .aliasFile])

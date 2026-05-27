@@ -130,7 +130,8 @@ class AppDelegate: AppDelegateParent {
     var lastDragChangeCount = NSPasteboard(name: .drag).changeCount
 
     @MainActor lazy var dragMonitor = GlobalEventMonitor(mask: [.leftMouseDragged]) { event in
-        guard self.finishedOnboarding, NSEvent.pressedMouseButtons > 0, proactive || DM.optimisationCount <= 5 else {
+        // Ziben custom: bypass Pro drag-and-drop limit (was: proactive || DM.optimisationCount <= 5)
+        guard self.finishedOnboarding, NSEvent.pressedMouseButtons > 0 else {
             return
         }
 
@@ -1527,8 +1528,9 @@ struct ClopApp: App {
     }
 }
 
+// Ziben custom: fully unlocked fork, always Pro
 @inline(__always) var proactive: Bool {
-    (PRO?.productActivated ?? false) || (PRO?.onTrial ?? false)
+    true
 }
 
 extension NSFilePromiseReceiver {

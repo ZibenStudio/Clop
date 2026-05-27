@@ -34,24 +34,7 @@ struct MenuView: View {
 
     @State var cliInstallResult: String?
 
-    @ViewBuilder var proErrors: some View {
-        Section("Skipped items because of free version limits") {
-            ForEach(om.skippedBecauseNotPro, id: \.self) { url in
-                let str = url.isFileURL ? url.filePath!.shellString : url.absoluteString
-                Button("    \(str.count > 50 ? (str.prefix(25) + "..." + str.suffix(15)) : str)") {
-                    QuickLooker.quicklook(url: url)
-                }
-            }
-            Button("Get Clop Pro") {
-                settingsViewManager.tab = .about
-                openWindow(id: "settings")
-
-                PRO?.manageLicence()
-                focus()
-                NSApp.windows.first(where: { $0.title == "Settings" })?.makeKeyAndOrderFront(nil)
-            }
-        }
-    }
+    // Ziben custom: removed Pro paywall UI (proErrors section)
 
     var body: some View {
         Button("Settings") {
@@ -168,10 +151,6 @@ struct MenuView: View {
             }
         }
 
-        if !proactive, !om.skippedBecauseNotPro.isEmpty {
-            proErrors
-        }
-
         Menu("About...") {
             Button("Contact the developer") {
                 NSWorkspace.shared.open(contactURL())
@@ -179,7 +158,6 @@ struct MenuView: View {
             Button("Privacy policy") {
                 NSWorkspace.shared.open("https://lowtechguys.com/clop/privacy".url!)
             }
-            Text("License: \(proactive ? "Pro" : "Free")")
             #if DEBUG
                 Button("Reset Trial") {
                     product?.resetTrial()
@@ -189,15 +167,6 @@ struct MenuView: View {
                 }
             #endif
             Text("Version: v\(Bundle.main.version)")
-        }
-
-        Button("Manage license") {
-            settingsViewManager.tab = .about
-            openWindow(id: "settings")
-
-            PRO?.manageLicence()
-            focus()
-            NSApp.windows.first(where: { $0.title == "Settings" })?.makeKeyAndOrderFront(nil)
         }
 
         Button(um.newVersion != nil ? "v\(um.newVersion!) update available" : "Check for updates") {
