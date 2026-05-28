@@ -7,20 +7,42 @@
 
 import SwiftUI
 
+import Atomics
 import Cocoa
 import Combine
 import Defaults
 import Foundation
+import Ignore
 import Lowtech
 import LowtechIndie
 import LowtechPro
+import LowtechProSentry
+import os
 import Sentry
 import ServiceManagement
 import System
 import UniformTypeIdentifiers
-#if !PREVIEW
-    import Ignore
-#endif
+
+private let log = Logger(subsystem: LOG_SUBSYSTEM, category: "ClopApp")
+
+func clopDebugLog(_ message: String, includeCallStack: Bool = false) {
+    guard let bid = Bundle.main.bundleIdentifier, bid.hasPrefix("com.ziben.Clop") else { return }
+
+    let df = DateFormatter()
+    df.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
+    var line = "[\(df.string(from: Date()))] \(message)\n"
+    if includeCallStack {
+        line += Thread.callStackSymbols.joined(separator: "\n") + "\n"
+    }
+    let path = (NSHomeDirectory() as NSString).appendingPathComponent(".clop-debug-logs")
+    if let handle = FileHandle(forWritingAtPath: path) {
+        handle.seekToEndOfFile()
+        handle.write(line.data(using: .utf8)!)
+        handle.closeFile()
+    } else {
+        FileManager.default.createFile(atPath: path, contents: line.data(using: .utf8)!)
+    }
+}
 
 var pauseForNextClipboardEvent = false
 
@@ -109,9 +131,12 @@ class AppDelegate: AppDelegateParent {
         PADDisplayConfiguration(.window, hideNavigationButtons: false, parentWindow: nil)
     }
 
+    var proDebugCancellables = Set<AnyCancellable>()
+
     var videoWatcher: FileOptimisationWatcher?
     var imageWatcher: FileOptimisationWatcher?
     var pdfWatcher: FileOptimisationWatcher?
+    var audioWatcher: FileOptimisationWatcher?
 
     @MainActor var swipeEnded = true
 
@@ -161,12 +186,12 @@ class AppDelegate: AppDelegateParent {
             }
 
             if types.contains(.fileURL), let url = item.string(forType: .fileURL)?.url,
-               let path = url.existingFilePath, path.isImage || path.isVideo || path.isPDF
+               let path = url.existingFilePath, path.isImage || path.isVideo || path.isAudio || path.isPDF
             {
                 return .file(path)
             }
 
-            if let str = item.string(forType: .string), let path = str.existingFilePath, path.isImage || path.isVideo || path.isPDF {
+            if let str = item.string(forType: .string), let path = str.existingFilePath, path.isImage || path.isVideo || path.isAudio || path.isPDF {
                 return .file(path)
             }
 
@@ -235,6 +260,7 @@ class AppDelegate: AppDelegateParent {
             unarchiveBinaries()
             print(NSFilePromiseReceiver.swizzleReceivePromisedFiles)
             NSView.swizzleDragFormation()
+            swizzleDraggableToRealPath()
             shouldRestartOnCrash = true
 
             NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier!)
@@ -257,6 +283,7 @@ class AppDelegate: AppDelegateParent {
             }
 
             syncSettings()
+            _ = LastFocusedAppTracker.shared
             Defaults[.cliInstalled] = fm.fileExists(atPath: CLOP_CLI_BIN_LINK)
             Migrations.run()
             createFileCleaner()
@@ -275,31 +302,54 @@ class AppDelegate: AppDelegateParent {
         if !SWIFTUI_PREVIEW {
             LowtechSentry.sentryDSN = "https://7dad9331a2e1753c3c0c6bc93fb0d523@o84592.ingest.sentry.io/4505673793077248"
             LowtechSentry.configureSentry(restartOnHang: false, getUser: LowtechSentry.getSentryUser)
-            configureAppHangDetection()
+            configureAppHangDetection { _, _ in
+                activeCLIRequests.load(ordering: .relaxed) > 0 ? .suppressRestart : .useDefault
+            }
 
             KM.primaryKeyModifiers = Defaults[.keyComboModifiers]
             KM.primaryKeys = Defaults[.enabledKeys] + Defaults[.quickResizeKeys]
             KM.onPrimaryHotkey = { key in
                 self.handleHotkey(key)
-                let _ = checkInternalRequirements2(PRODUCTS, nil)
+                let _ = invalidReq2(PRODUCTS, nil)
             }
 
             KM.secondaryKeyModifiers = [.lcmd]
             KM.onSecondaryHotkey = { key in
                 self.handleCommandHotkey(key)
-                let _ = checkInternalRequirements3(PRODUCTS, nil)
+                let _ = invalidReq3(PRODUCTS, nil)
             }
         }
         super.applicationDidFinishLaunching(_: notification)
         UM.updater = updateController.updater
         PM.pro = pro
         if !SWIFTUI_PREVIEW {
+            clopDebugLog("applicationDidFinishLaunching: about to checkProLicense (productActivated=\(pro.productActivated), onTrial=\(pro.onTrial))")
             pro.checkProLicense()
         }
 
+        let p = pro
+        p.$productActivated.sink { newValue in
+            clopDebugLog("proactive observer: productActivated changed to \(newValue) (onTrial=\(p.onTrial), proactive will be \(newValue || p.onTrial))")
+        }.store(in: &proDebugCancellables)
+        p.$onTrial.sink { newValue in
+            clopDebugLog("proactive observer: onTrial changed to \(newValue) (productActivated=\(p.productActivated), proactive will be \(p.productActivated || newValue))")
+        }.store(in: &proDebugCancellables)
+
         Defaults[.videoDirs] = Defaults[.videoDirs].filter { fm.fileExists(atPath: $0) }
+        migrateShortcutsToPipelines()
+
+        BetaLicenseChecker.start()
 
         guard !SWIFTUI_PREVIEW else { return }
+
+        #if DEBUG
+            settingsViewManager.tab = .automation
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                WM.open("settings")
+                focus()
+            }
+        #endif
+
         floatingResultsWindow.animateOnResize = false
         pub(.allowClopToAppearInScreenshots)
             .sink {
@@ -387,13 +437,14 @@ class AppDelegate: AppDelegateParent {
             .store(in: &observers)
         initMachPortListener()
 
-        let _ = checkInternalRequirements(PRODUCTS, nil)
+        let _ = invalidReq(PRODUCTS, nil)
         setupServiceProvider()
         startShortcutWatcher()
         DROPSHARE.fetchAppURL()
         DROPOVER.fetchAppURL()
         YOINK.fetchAppURL()
         DOCKSIDE.fetchAppURL()
+        ATOLL.fetchAppURL()
 
         // listen for NSWindow.willCloseNotification to release the window
         NotificationCenter.default.addObserver(self, selector: #selector(windowWillClose), name: NSWindow.willCloseNotification, object: nil)
@@ -420,6 +471,9 @@ class AppDelegate: AppDelegateParent {
 
     static func handleOptimisationRequest(_ req: OptimisationRequest) -> Data? {
         log.debug("Handling optimisation request: \(req.jsonString)")
+
+        activeCLIRequests.wrappingIncrement(ordering: .relaxed)
+        defer { activeCLIRequests.wrappingDecrement(ordering: .relaxed) }
 
         let sem = DispatchSemaphore(value: 0)
         var resp: [OptimisationResponse] = []
@@ -467,9 +521,9 @@ class AppDelegate: AppDelegateParent {
             }
         } catch {
             log.error("Error optimising files from 'Open with': \(error.localizedDescription)")
-            await application.reply(toOpenOrPrint: .failure)
+            application.reply(toOpenOrPrint: .failure)
         }
-        await application.reply(toOpenOrPrint: .success)
+        application.reply(toOpenOrPrint: .success)
     }
 
     func setupServiceProvider() {
@@ -489,7 +543,7 @@ class AppDelegate: AppDelegateParent {
             WM.open("settings")
             focus()
         case .minus where opt.downscaleFactor > 0.1:
-            opt.downscale()
+            opt.stepDownscale()
         case .x where opt.changePlaybackSpeedFactor < 10 && opt.canChangePlaybackSpeed():
             opt.changePlaybackSpeed()
         case .delete:
@@ -501,7 +555,7 @@ class AppDelegate: AppDelegateParent {
             opt.restoreOriginal()
         case .r where !opt.running:
             opt.editingFilename = true
-        case .d where opt.url != nil && opt.comparisonOriginalURL != nil:
+        case .d where !opt.type.isAudio && opt.url != nil && opt.comparisonOriginalURL != nil:
             opt.compare()
         case .c:
             opt.copyToClipboard()
@@ -512,6 +566,13 @@ class AppDelegate: AppDelegateParent {
             opt.showInFinder()
         case .u:
             DROPSHARE.open(optimiser: opt)
+        case .w:
+            if let session = WDM.session(forOptimiser: opt) {
+                session.copyLink()
+                opt.overlayMessage = "Copied link"
+            } else {
+                warpDropSend(optimiser: opt)
+            }
         case .o:
             guard let url = opt.url ?? opt.originalURL else { return }
             NSWorkspace.shared.open(url)
@@ -536,7 +597,7 @@ class AppDelegate: AppDelegateParent {
         case .minus:
             if let opt = OM.current {
                 guard opt.downscaleFactor > 0.1 else { return }
-                opt.downscale()
+                opt.stepDownscale()
             } else {
                 guard scalingFactor > 0.1 else { return }
                 scalingFactor = max(scalingFactor > 0.5 ? scalingFactor - 0.25 : scalingFactor - 0.1, 0.1)
@@ -790,6 +851,25 @@ class AppDelegate: AppDelegateParent {
                     }
                 }
             }.store(in: &observers)
+
+        NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            guard let hov = hoveredOptimiserID,
+                  let optimiser = OM.optimisers.first(where: { $0.id == hov }),
+                  event.modifierFlags.contains(.command)
+            else { return event }
+
+            switch event.charactersIgnoringModifiers {
+            case "e":
+                guard let shelfApp = runningShelfApp() else { return event }
+                shelfApp.open(optimiser: optimiser)
+                return nil
+            case "f":
+                optimiser.showInFinder()
+                return nil
+            default:
+                return event
+            }
+        }
     }
 
     func applicationShouldHandleReopen(_: NSApplication, hasVisibleWindows _: Bool) -> Bool {
@@ -816,12 +896,35 @@ class AppDelegate: AppDelegateParent {
             shouldHandle: shouldHandleVideo(event:),
             cancel: cancelVideoOptimisation(path:)
         ) { path in
-            guard OM.visibleOptimisers.first(where: { $0.running && $0.id == path.string }) == nil else {
+            guard OM.visibleOptimisers.first(where: { $0.running && $0.id == path.string }) == nil,
+                  !OM.optimisers.contains(where: { $0.url?.path == path.string })
+            else {
                 return
             }
             Task.init {
-                let video = Video(path: path)
-                let _ = try? await optimiseVideo(video, debounceMS: debounceMS, source: Defaults[.videoDirs].filter { path.string.starts(with: $0) }.max(by: \.count)?.optSource)
+                let matchedDir = Defaults[.videoDirs].filter { path.string.starts(with: $0) }.max(by: \.count)
+                let source = matchedDir?.optSource
+                let hide = matchedDir.map { Defaults[.dirsHideFloatingResult].contains($0) } ?? false
+                let type: ItemType = .video(UTType.from(filePath: path) ?? .mpeg4Movie)
+                let pipelines = source.map { pipelinesFor(type: type, source: $0) } ?? []
+                let allSkip = !pipelines.isEmpty && pipelines.allSatisfy(\.skipOptimisation)
+
+                var resultPath = path
+                if allSkip {
+                    let optimiser = OM.optimiser(id: path.string, type: type, operation: "Running pipeline", hidden: true, source: source)
+                    optimiser.url = path.url
+                    if let source {
+                        await runPipelinesAfterOptimisation(file: resultPath, type: type, source: source, optimiser: optimiser)
+                    }
+                } else {
+                    let video = Video(path: path)
+                    if let result = try? await runVideoPipeline(video, actions: [.optimise], debounceMS: debounceMS, hideFloatingResult: hide, source: source) {
+                        resultPath = result.path
+                    }
+                    if let source, let optimiser = opt(path.string) {
+                        await runPipelinesAfterOptimisation(file: resultPath, type: type, source: source, optimiser: optimiser)
+                    }
+                }
             }
         }
         imageWatcher = FileOptimisationWatcher(
@@ -832,12 +935,35 @@ class AppDelegate: AppDelegateParent {
             shouldHandle: shouldHandleImage(event:),
             cancel: cancelImageOptimisation(path:)
         ) { path in
-            guard OM.visibleOptimisers.first(where: { $0.running && $0.id == path.string }) == nil else {
+            guard OM.visibleOptimisers.first(where: { $0.running && $0.id == path.string }) == nil,
+                  !OM.optimisers.contains(where: { $0.url?.path == path.string })
+            else {
                 return
             }
             Task.init {
+                let matchedDir = Defaults[.imageDirs].filter { path.string.starts(with: $0) }.max(by: \.count)
+                let source = matchedDir?.optSource
+                let hide = matchedDir.map { Defaults[.dirsHideFloatingResult].contains($0) } ?? false
                 guard let img = Image(path: path, retinaDownscaled: false) else { return }
-                let _ = try? await optimiseImage(img, debounceMS: debounceMS, source: Defaults[.imageDirs].filter { path.string.starts(with: $0) }.max(by: \.count)?.optSource)
+                let type: ItemType = .image(img.type)
+                let pipelines = source.map { pipelinesFor(type: type, source: $0) } ?? []
+                let allSkip = !pipelines.isEmpty && pipelines.allSatisfy(\.skipOptimisation)
+
+                var resultPath = path
+                if allSkip {
+                    let optimiser = OM.optimiser(id: path.string, type: type, operation: "Running pipeline", hidden: true, source: source)
+                    optimiser.url = path.url
+                    if let source {
+                        await runPipelinesAfterOptimisation(file: resultPath, type: type, source: source, optimiser: optimiser)
+                    }
+                } else {
+                    if let result = try? await runImagePipeline(img, actions: [.optimise], debounceMS: debounceMS, hideFloatingResult: hide, source: source) {
+                        resultPath = result.path
+                    }
+                    if let source, let optimiser = opt(path.string) {
+                        await runPipelinesAfterOptimisation(file: resultPath, type: type, source: source, optimiser: optimiser)
+                    }
+                }
             }
         }
         pdfWatcher = FileOptimisationWatcher(
@@ -848,11 +974,72 @@ class AppDelegate: AppDelegateParent {
             shouldHandle: shouldHandlePDF(event:),
             cancel: cancelPDFOptimisation(path:)
         ) { path in
-            guard OM.visibleOptimisers.first(where: { $0.running && $0.id == path.string }) == nil else {
+            guard OM.visibleOptimisers.first(where: { $0.running && $0.id == path.string }) == nil,
+                  !OM.optimisers.contains(where: { $0.url?.path == path.string })
+            else {
                 return
             }
             Task.init {
-                let _ = try? await optimisePDF(PDF(path), debounceMS: debounceMS, source: Defaults[.pdfDirs].filter { path.string.starts(with: $0) }.max(by: \.count)?.optSource)
+                let matchedDir = Defaults[.pdfDirs].filter { path.string.starts(with: $0) }.max(by: \.count)
+                let source = matchedDir?.optSource
+                let hide = matchedDir.map { Defaults[.dirsHideFloatingResult].contains($0) } ?? false
+                let type: ItemType = .pdf
+                let pipelines = source.map { pipelinesFor(type: type, source: $0) } ?? []
+                let allSkip = !pipelines.isEmpty && pipelines.allSatisfy(\.skipOptimisation)
+
+                var resultPath = path
+                if allSkip {
+                    let optimiser = OM.optimiser(id: path.string, type: type, operation: "Running pipeline", hidden: true, source: source)
+                    optimiser.url = path.url
+                    if let source {
+                        await runPipelinesAfterOptimisation(file: resultPath, type: type, source: source, optimiser: optimiser)
+                    }
+                } else {
+                    if let result = try? await runPDFPipeline(PDF(path), actions: [.optimise], debounceMS: debounceMS, hideFloatingResult: hide, source: source) {
+                        resultPath = result.path
+                    }
+                    if let source, let optimiser = opt(path.string) {
+                        await runPipelinesAfterOptimisation(file: resultPath, type: type, source: source, optimiser: optimiser)
+                    }
+                }
+            }
+        }
+        audioWatcher = FileOptimisationWatcher(
+            pathsKey: .audioDirs,
+            enabledKey: .enableAutomaticAudioOptimisations,
+            maxFilesToHandleKey: .maxAudioFileCount,
+            fileType: .audio,
+            shouldHandle: shouldHandleAudio(event:),
+            cancel: cancelAudioOptimisation(path:)
+        ) { path in
+            guard OM.visibleOptimisers.first(where: { $0.running && $0.id == path.string }) == nil,
+                  !OM.optimisers.contains(where: { $0.url?.path == path.string })
+            else {
+                return
+            }
+            Task.init {
+                let matchedDir = Defaults[.audioDirs].filter { path.string.starts(with: $0) }.max(by: \.count)
+                let source = matchedDir?.optSource
+                let hide = matchedDir.map { Defaults[.dirsHideFloatingResult].contains($0) } ?? false
+                let type: ItemType = .audio(UTType.from(filePath: path) ?? .mp3)
+                let pipelines = source.map { pipelinesFor(type: type, source: $0) } ?? []
+                let allSkip = !pipelines.isEmpty && pipelines.allSatisfy(\.skipOptimisation)
+
+                var resultPath = path
+                if allSkip {
+                    let optimiser = OM.optimiser(id: path.string, type: type, operation: "Running pipeline", hidden: true, source: source)
+                    optimiser.url = path.url
+                    if let source {
+                        await runPipelinesAfterOptimisation(file: resultPath, type: type, source: source, optimiser: optimiser)
+                    }
+                } else {
+                    if let result = try? await runAudioPipeline(Audio(path: path), actions: [.optimise], debounceMS: debounceMS, hideFloatingResult: hide, source: source) {
+                        resultPath = result.path
+                    }
+                    if let source, let optimiser = opt(path.string) {
+                        await runPipelinesAfterOptimisation(file: resultPath, type: type, source: source, optimiser: optimiser)
+                    }
+                }
             }
         }
 
@@ -860,7 +1047,7 @@ class AppDelegate: AppDelegateParent {
             initClipboardOptimiser()
         }
 
-        let _ = checkInternalRequirements(PRODUCTS, nil)
+        let _ = invalidReq(PRODUCTS, nil)
     }
 
     @MainActor func initClipboardOptimiser() {
@@ -881,6 +1068,14 @@ class AppDelegate: AppDelegateParent {
                 return
             }
 
+            let ignoredApps = Defaults[.clipboardIgnoredAppBundleIds]
+            if !ignoredApps.isEmpty,
+               let frontmostBundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
+               ignoredApps.contains(frontmostBundleID)
+            {
+                return
+            }
+
             mainActor {
                 guard !BM.decompressingBinaries else {
                     return
@@ -888,17 +1083,95 @@ class AppDelegate: AppDelegateParent {
 
                 scalingFactor = 1
 
-                if self.optimiseVideoClipboard, let path = item.existingFilePath, path.isVideo, !path.hasOptimisationStatusXattr() {
+                if self.optimiseVideoClipboard, let path = item.existingFilePath, path.isVideo {
                     let ignore = Defaults[.videoFormatsToSkip]
                     if !ignore.isEmpty, let itemType = ItemType.from(filePath: path).utType, ignore.contains(itemType) {
                         return
                     }
-                    Task.init {
-                        let _ = try? await optimiseVideo(Video(path: path), source: .clipboard)
+                    let alreadyOptimised = path.hasOptimisationStatusXattr()
+                    if alreadyOptimised {
+                        let type: ItemType = .video(UTType.from(filePath: path) ?? .mpeg4Movie)
+                        let pipelines = pipelinesFor(type: type, source: .clipboard)
+                        if !pipelines.isEmpty {
+                            Task.init {
+                                let optimiser = OM.optimiser(id: path.string, type: type, operation: "Running pipeline", hidden: true, source: .clipboard)
+                                optimiser.url = path.url
+                                await runPipelinesAfterOptimisation(file: path, type: type, source: .clipboard, optimiser: optimiser)
+                            }
+                        }
+                    } else {
+                        Task.init {
+                            let type: ItemType = .video(UTType.from(filePath: path) ?? .mpeg4Movie)
+                            var resultPath = path
+                            if let result = try? await runVideoPipeline(Video(path: path), actions: [.optimise], source: .clipboard) {
+                                resultPath = result.path
+                            }
+                            if let optimiser = opt(path.string) {
+                                await runPipelinesAfterOptimisation(file: resultPath, type: type, source: .clipboard, optimiser: optimiser)
+                            }
+                        }
+                    }
+                    return
+                }
+                if Defaults[.optimisePDFClipboard], let path = item.existingFilePath, path.isPDF {
+                    let alreadyOptimised = path.hasOptimisationStatusXattr()
+                    if alreadyOptimised {
+                        let type: ItemType = .pdf
+                        let pipelines = pipelinesFor(type: type, source: .clipboard)
+                        if !pipelines.isEmpty {
+                            Task.init {
+                                let optimiser = OM.optimiser(id: path.string, type: type, operation: "Running pipeline", hidden: true, source: .clipboard)
+                                optimiser.url = path.url
+                                await runPipelinesAfterOptimisation(file: path, type: type, source: .clipboard, optimiser: optimiser)
+                            }
+                        }
+                    } else {
+                        Task.init {
+                            var resultPath = path
+                            if let result = try? await runPDFPipeline(PDF(path), actions: [.optimise], source: .clipboard) {
+                                resultPath = result.path
+                            }
+                            if let optimiser = opt(path.string) {
+                                await runPipelinesAfterOptimisation(file: resultPath, type: .pdf, source: .clipboard, optimiser: optimiser)
+                            }
+                        }
                     }
                     return
                 }
                 if item.existingFilePath?.isPDF ?? false {
+                    return
+                }
+                if Defaults[.optimiseAudioClipboard], let path = item.existingFilePath, path.isAudio {
+                    let ignore = Defaults[.audioFormatsToSkip]
+                    if !ignore.isEmpty, let itemType = ItemType.from(filePath: path).utType, ignore.contains(itemType) {
+                        return
+                    }
+                    let alreadyOptimised = path.hasOptimisationStatusXattr()
+                    if alreadyOptimised {
+                        let type: ItemType = .audio(UTType.from(filePath: path) ?? .mp3)
+                        let pipelines = pipelinesFor(type: type, source: .clipboard)
+                        if !pipelines.isEmpty {
+                            Task.init {
+                                let optimiser = OM.optimiser(id: path.string, type: type, operation: "Running pipeline", hidden: true, source: .clipboard)
+                                optimiser.url = path.url
+                                await runPipelinesAfterOptimisation(file: path, type: type, source: .clipboard, optimiser: optimiser)
+                            }
+                        }
+                    } else {
+                        Task.init {
+                            let type: ItemType = .audio(UTType.from(filePath: path) ?? .mp3)
+                            var resultPath = path
+                            if let result = try? await runAudioPipeline(Audio(path: path), actions: [.optimise], source: .clipboard) {
+                                resultPath = result.path
+                            }
+                            if let optimiser = opt(path.string) {
+                                await runPipelinesAfterOptimisation(file: resultPath, type: type, source: .clipboard, optimiser: optimiser)
+                            }
+                        }
+                    }
+                    return
+                }
+                if item.existingFilePath?.isAudio ?? false {
                     return
                 }
                 if item.types.contains(.photosReferenceAsset) {
@@ -943,479 +1216,6 @@ extension NSPasteboardItem {
     }
 }
 
-enum ClopFileType: String, CaseIterable, CustomStringConvertible, Codable {
-    case image
-    case video
-    case pdf
-
-    var defaultNameTemplatePath: FilePath {
-        switch self {
-        case .image:
-            "~/Desktop/shot.png".filePath!
-        case .video:
-            "~/Desktop/rec.mp4".filePath!
-        case .pdf:
-            "~/Desktop/doc.pdf".filePath!
-        }
-    }
-
-    var optimisedBehaviourKey: Defaults.Key<OptimisedFileBehaviour> {
-        switch self {
-        case .image:
-            .optimisedImageBehaviour
-        case .video:
-            .optimisedVideoBehaviour
-        case .pdf:
-            .optimisedPDFBehaviour
-        }
-    }
-
-    var sameFolderNameTemplateKey: Defaults.Key<String> {
-        switch self {
-        case .image:
-            .sameFolderNameTemplateImage
-        case .video:
-            .sameFolderNameTemplateVideo
-        case .pdf:
-            .sameFolderNameTemplatePDF
-        }
-    }
-
-    var specificFolderNameTemplateKey: Defaults.Key<String> {
-        switch self {
-        case .image:
-            .specificFolderNameTemplateImage
-        case .video:
-            .specificFolderNameTemplateVideo
-        case .pdf:
-            .specificFolderNameTemplatePDF
-        }
-    }
-
-    var optimisedFileBehaviour: OptimisedFileBehaviour {
-        Defaults[optimisedBehaviourKey]
-    }
-
-    var description: String {
-        switch self {
-        case .image:
-            "image"
-        case .video:
-            "video"
-        case .pdf:
-            "PDF"
-        }
-    }
-
-    var otherCases: [ClopFileType] {
-        ClopFileType.allCases.filter { $0 != self }
-    }
-    var tab: SettingsView.Tabs {
-        switch self {
-        case .image:
-            .images
-        case .video:
-            .video
-        case .pdf:
-            .pdf
-        }
-    }
-
-    var symbolName: String {
-        switch self {
-        case .image:
-            "photo"
-        case .video:
-            "film"
-        case .pdf:
-            "doc"
-        }
-    }
-}
-#if !DEBUG
-    import Ignore
-#endif
-
-extension EonilFSEventsEvent: @retroactive Hashable {
-    public static func == (lhs: EonilFSEventsEvent, rhs: EonilFSEventsEvent) -> Bool {
-        lhs.path == rhs.path
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(path)
-    }
-}
-
-@MainActor
-class FileOptimisationWatcher {
-    init(
-        pathsKey: Defaults.Key<[String]>,
-        enabledKey: Defaults.Key<Bool>,
-        maxFilesToHandleKey: Defaults.Key<Int>,
-        fileType: ClopFileType,
-        shouldHandle: @escaping (EonilFSEventsEvent) -> Bool,
-        cancel: @escaping (FilePath) -> Void,
-        handler: @escaping (FilePath) -> Void
-    ) {
-        self.pathsKey = pathsKey
-        self.enabledKey = enabledKey
-        self.maxFilesToHandleKey = maxFilesToHandleKey
-        self.fileType = fileType
-        self.shouldHandle = shouldHandle
-        self.cancel = cancel
-        self.handler = handler
-
-        pub(pathsKey).sink { [weak self] change in
-            self?.paths = change.newValue
-            self?.startWatching()
-        }.store(in: &observers)
-
-        pub(enabledKey).sink { [weak self] change in
-            guard let self else { return }
-
-            enabled = change.newValue
-            if change.newValue {
-                startWatching()
-            } else if watching {
-                watching = false
-                LowtechFSEvents.stopWatching(for: ObjectIdentifier(self))
-            }
-        }.store(in: &observers)
-
-        pub(maxFilesToHandleKey).sink { [weak self] change in
-            self?.maxFilesToHandle = change.newValue
-        }.store(in: &observers)
-
-        pub(.pauseAutomaticOptimisations).sink { [weak self] change in
-            guard let self else { return }
-
-            if change.newValue {
-                if watching {
-                    watching = false
-                    LowtechFSEvents.stopWatching(for: ObjectIdentifier(self))
-                }
-            } else {
-                startWatching()
-            }
-        }.store(in: &observers)
-
-        startWatching()
-    }
-
-    deinit {
-        guard watching else { return }
-        watching = false
-        LowtechFSEvents.stopWatching(for: ObjectIdentifier(self))
-    }
-
-    var semaphore = DispatchSemaphore(value: 1)
-
-    var watching = false
-    var fileType: ClopFileType
-
-    var pathsKey: Defaults.Key<[String]>
-    var enabledKey: Defaults.Key<Bool>
-    lazy var paths: [String] = Defaults[pathsKey]
-    lazy var enabled: Bool = Defaults[enabledKey]
-
-    var maxFilesToHandleKey: Defaults.Key<Int>
-    lazy var maxFilesToHandle: Int = Defaults[maxFilesToHandleKey]
-
-    var handler: (FilePath) -> Void
-    var cancel: (FilePath) -> Void
-    var shouldHandle: (EonilFSEventsEvent) -> Bool
-
-    var observers = Set<AnyCancellable>()
-    var justAddedFiles = Set<EonilFSEventsEvent>()
-    var cancelledFiles = Set<FilePath>()
-    var alreadyOptimisedFiles = Set<String>()
-    var addedFileRemovers = [FilePath: DispatchWorkItem]()
-    var alreadyOptimisedFileRemovers = [String: DispatchWorkItem]()
-
-    let startedWatchingAt = Date()
-
-    lazy var delayOptimiserID = "file-watcher-delay-\(fileType.rawValue)"
-    var delayOptimiser: Optimiser?
-
-    var addedFilesCleaner: DispatchWorkItem? {
-        didSet {
-            oldValue?.cancel()
-        }
-    }
-    var addedFilesProcessor: DispatchWorkItem? {
-        didSet {
-            oldValue?.cancel()
-        }
-    }
-
-    var clopIgnoreFileName: String {
-        ".clopignore-\(fileType.rawValue)"
-    }
-
-    var withinSafeMeasureTime: Bool {
-        startedWatchingAt.timeIntervalSinceNow > -30 && Defaults[.launchCount] == 1
-    }
-
-    static func waitForModificationDateToSettle(_ path: String) async {
-        guard let attrs = try? fm.attributesOfItem(atPath: path), let date = attrs[.modificationDate] as? Date else {
-            log.warning("Failed to get modification date of \(path)")
-            return
-        }
-
-        log.debug("Waiting for modification date of \(path) to settle")
-        log.debug("Initial modification date: \(date)")
-        var lastDate = date
-        var validCheckCount = 0
-        while true {
-            do {
-                try await Task.sleep(nanoseconds: 300_000_000) // 300ms
-            } catch {
-                log.error("Failed to sleep: \(error)")
-                return
-            }
-
-            guard let attrs = try? fm.attributesOfItem(atPath: path), let date = attrs[.modificationDate] as? Date else {
-                log.warning("Failed to get modification date of \(path)")
-                return
-            }
-
-            if date == lastDate, let path = path.filePath {
-                if validCheckCount >= 5 {
-                    log.debug("Modification date of \(path) settled at \(date) but final validity check failed too many times, returning")
-                    return
-                }
-
-                var isValid = false
-                do {
-                    isValid = try await (path.isValid())
-                } catch {
-                    log.debug("File \(path) is still being modified, not valid yet: \(error)")
-                    validCheckCount += 1
-                    continue
-                }
-                if !isValid {
-                    log.debug("File \(path) is still being modified, not valid yet")
-                    validCheckCount += 1
-                    continue
-                }
-                log.debug("Modification date of \(path) settled at \(date)")
-                return
-            }
-
-            log.debug("Modification date of \(path) is still changing: \(lastDate) -> \(date)")
-            lastDate = date
-        }
-    }
-
-    func isAddedFile(event: EonilFSEventsEvent) -> Bool {
-        guard let flag = event.flag, let path = event.path.existingFilePath, let stem = path.stem, !stem.starts(with: ".") else {
-            return false
-        }
-
-        return flag.isDisjoint(with: [.historyDone, .itemRemoved]) &&
-            flag.contains(.itemIsFile) &&
-            flag.hasElements(from: [.itemCreated, .itemRenamed, .itemModified])
-    }
-
-    func stopWatching() {
-        if watching {
-            semaphore.wait()
-            defer { semaphore.signal() }
-
-            watching = false
-            LowtechFSEvents.stopWatching(for: ObjectIdentifier(self))
-        }
-    }
-
-    func startWatching() {
-        stopWatching()
-        guard !paths.isEmpty, enabled, !Defaults[.pauseAutomaticOptimisations] else { return }
-
-        do {
-            try LowtechFSEvents.startWatching(paths: paths, for: ObjectIdentifier(self), latency: 0.3, flags: [.noDefer, .fileEvents, .ignoreSelf, .markSelf]) { [weak self] event in
-                guard event.flag?.contains(.ownEvent) == false else { return }
-                self?.semaphore.wait()
-                defer { self?.semaphore.signal() }
-
-                guard !SWIFTUI_PREVIEW, !BM.decompressingBinaries, let self, enabled, isAddedFile(event: event),
-                      !self.alreadyOptimisedFiles.contains(event.path),
-                      !OM.optimisers.contains(where: { $0.url?.path == event.path }),
-                      let path = event.path.existingFilePath, shouldHandle(event)
-                else { return }
-
-                let typeName = fileType.description
-                addedFilesCleaner = nil
-                log.debug("Added \(path.string) to justAddedFiles in the \(typeName) watcher")
-                justAddedFiles.insert(event)
-                cancelledFiles.remove(path)
-
-                if !withinSafeMeasureTime {
-                    addedFileRemovers[path]?.cancel()
-                    addedFileRemovers[path] = mainAsyncAfter(ms: 1000) { [weak self] in
-                        log.debug("Removed \(path.string) from justAddedFiles in the \(typeName) watcher")
-                        self?.justAddedFiles.remove(event)
-                        self?.addedFileRemovers.removeValue(forKey: path)
-                    }
-                }
-
-                Task.init { [weak self] in await self?.checkEventAndProcess(event) }
-            }
-            watching = true
-        } catch {
-            log.error("Failed to start watching \(fileType.rawValue) folders: \(error)")
-            return
-        }
-    }
-
-    @MainActor
-    func checkEventAndProcess(_ event: EonilFSEventsEvent) async {
-        let shouldContinue = await MainActor.run { [weak self] in
-            guard let self, enabled else { return false }
-            // guard !alreadyOptimisedFiles.contains(event.path) else { return false }
-            // guard shouldHandle(event) else { return false }
-
-            #if !PREVIEW
-                if let root = paths.first(where: { event.path.hasPrefix($0) }), let ignorePath = "\(root)/\(clopIgnoreFileName)".existingFilePath, event.path.isIgnored(in: ignorePath.string) {
-                    log.debug("Ignoring \(event.path) because it's in \(ignorePath.string)")
-                    return false
-                }
-            #endif
-
-            guard !hasSpuriousEvent(event) else { return false }
-
-            guard justAddedFiles.count <= maxFilesToHandle else {
-                let notice = "More than \(maxFilesToHandle) \(fileType.rawValue)s appeared in the\n`\(justAddedFiles.first!.path.filePath?.dir.shellString ?? "folder")`, ignoring…"
-                log.debug(notice)
-                showNotice(notice)
-                for path in justAddedFiles.compactMap(\.path.existingFilePath).set.subtracting(cancelledFiles) {
-                    log.debug("Cancelling optimisation on \(path)")
-                    cancel(path)
-                    cancelledFiles.insert(path)
-                }
-                addedFilesCleaner = mainAsyncAfter(ms: 1000) { [weak self] in
-                    log.debug("Cleaning up justAddedFiles and cancelledFiles")
-                    self?.cancelledFiles.removeAll()
-                    self?.justAddedFiles.removeAll()
-                }
-
-                return false
-            }
-
-            return true
-        }
-
-        guard shouldContinue else { return }
-        await Self.waitForModificationDateToSettle(event.path)
-
-        if pauseForNextClipboardEvent {
-            log.debug("Skipping \(fileType.description) \(event.path) because Clop was paused")
-            pauseForNextClipboardEvent = false
-            return
-        }
-
-        do {
-            try await process(event: event)
-        } catch {
-            log.error("Failed to process \(fileType.rawValue) \(event.path) file event: \(error)")
-        }
-    }
-
-    func hasSpuriousEvent(_ event: EonilFSEventsEvent) -> Bool {
-        guard withinSafeMeasureTime, !justAddedFiles.isEmpty else {
-            return false
-        }
-
-        guard justAddedFiles.count <= 5 else {
-            log.warning("More than 5 file events on first launch (\(justAddedFiles.count))")
-
-            addedFilesProcessor = nil
-            enabled = false
-            stopWatching()
-            Defaults[enabledKey] = false
-            justAddedFiles.removeAll()
-            cancelledFiles.removeAll()
-
-            delayOptimiser?.remove(after: 0)
-            delayOptimiser = nil
-
-            let alert = NSAlert()
-            alert.messageText = "Too many file events"
-            alert.informativeText = """
-            Clop detected a large number of file change events that happened as soon as Clop started watching the folders.
-
-            This is most likely caused by a third-party app that is constantly modifying files in the folders you selected to automatically optimise.
-
-            To avoid altering files you don't intend to, Clop will stop automatic optimisation in these folders. You can re-enable this feature in the settings.
-            """
-            alert.addButton(withTitle: "OK")
-            alert.addButton(withTitle: "Open Settings")
-            alert.alertStyle = .critical
-            focus()
-
-            if alert.runModal() == .alertSecondButtonReturn {
-                settingsViewManager.tab = fileType.tab
-                WM.open("settings")
-                focus()
-            }
-
-            return true
-        }
-
-        delayOptimiser = OM.optimiser(id: delayOptimiserID, type: .unknown, operation: "Initialising file watcher", hidden: false, source: .fileWatcher, indeterminateProgress: true)
-        addedFilesProcessor = mainAsyncAfter(ms: 3000) { [weak self] in
-            guard let self else { return }
-            for event in justAddedFiles.filter({ ev in
-                guard let path = ev.path.existingFilePath else { return false }
-                return !self.cancelledFiles.contains(path)
-            }) {
-                Task.init { [weak self] in try await self?.process(event: event) }
-            }
-            justAddedFiles.removeAll()
-            delayOptimiser?.remove(after: 0)
-            delayOptimiser = nil
-        }
-
-        return true
-    }
-
-    @MainActor
-    func process(event: EonilFSEventsEvent) async throws {
-        try await Task.sleep(nanoseconds: 300_000_000)
-        guard var path = event.path.existingFilePath, !self.cancelledFiles.contains(path) else { return }
-
-        let oldPath = path
-        var resolvedNewPath: FilePath?
-        if let newPath = try getTemplatedPath(type: fileType, path: path), newPath != path {
-            alreadyOptimisedFiles.insert(newPath.string)
-            alreadyOptimisedFiles.insert(path.string)
-            path = try path.copy(to: newPath, force: true)
-            try? oldPath.setOptimisationStatusXattr("original-processed")
-            resolvedNewPath = newPath
-        }
-
-        var count = optimisedCount
-        try? await proGuard(count: &count, limit: 5, url: path.url) {
-            self.handler(path)
-        }
-        optimisedCount = count
-        alreadyOptimisedFileRemovers[oldPath.string]?.cancel()
-        let protectionMs = Defaults[.optimisedFileProtectionMs]
-        alreadyOptimisedFileRemovers[oldPath.string] = mainAsyncAfter(ms: protectionMs) { [weak self] in
-            self?.alreadyOptimisedFiles.remove(oldPath.string)
-            self?.alreadyOptimisedFileRemovers.removeValue(forKey: oldPath.string)
-        }
-        if let newPathStr = resolvedNewPath?.string {
-            alreadyOptimisedFileRemovers[newPathStr]?.cancel()
-            alreadyOptimisedFileRemovers[newPathStr] = mainAsyncAfter(ms: protectionMs) { [weak self] in
-                self?.alreadyOptimisedFiles.remove(newPathStr)
-                self?.alreadyOptimisedFileRemovers.removeValue(forKey: newPathStr)
-            }
-        }
-    }
-
-    private var optimisedCount = 0
-}
-
 @MainActor func proLimitsReached(url: URL? = nil) {
     guard !Defaults[.neverShowProError] else {
         if let url, !OM.skippedBecauseNotPro.contains(url) {
@@ -1430,10 +1230,11 @@ class FileOptimisationWatcher {
     }
 
     let optimiser = OM.optimiser(id: Optimiser.IDs.pro, type: .unknown, operation: "")
-    optimiser.finish(error: "Free version limits reached", notice: "Only 5 file optimisations per session\nare included in the free version", keepFor: 5000)
+    optimiser.finish(error: "You've optimised 5 files this session", notice: "Get Clop Pro to remove the limit and unlock all features.\nRelaunch the app to reset the counter.", keepFor: 5000)
 }
 
 let floatingResultsWindow = OSDWindow(swiftuiView: FloatingResultContainer().any, level: .floating, canScreenshot: Defaults[.allowClopToAppearInScreenshots], allowsMouse: true)
+let cursorDropZoneWindow = OSDWindow(swiftuiView: DropZoneView().any, level: .floating, canScreenshot: Defaults[.allowClopToAppearInScreenshots], allowsMouse: true)
 var clipboardWatcher: Timer?
 var pbChangeCount = NSPasteboard.general.changeCount
 let THUMB_SIZE = CGSize(width: 300, height: 220)
@@ -1445,10 +1246,10 @@ func migrateSettings() {
 
     let currentPrefs = URL.libraryDirectory
         .appendingPathComponent("Preferences")
-        .appendingPathComponent(id == "com.lowtechguys.Clop-setapp" ? "com.lowtechguys.Clop-setapp.plist" : "com.lowtechguys.Clop.plist")
+        .appendingPathComponent(id == "com.ziben.Clop-setapp" ? "com.ziben.Clop-setapp.plist" : "com.ziben.Clop.plist")
     let oldPrefs = URL.libraryDirectory
         .appendingPathComponent("Preferences")
-        .appendingPathComponent(id == "com.lowtechguys.Clop-setapp" ? "com.lowtechguys.Clop.plist" : "com.lowtechguys.Clop-setapp.plist")
+        .appendingPathComponent(id == "com.ziben.Clop-setapp" ? "com.ziben.Clop.plist" : "com.ziben.Clop-setapp.plist")
 
     if !FileManager.default.fileExists(atPath: currentPrefs.path), FileManager.default.fileExists(atPath: oldPrefs.path) {
         try? FileManager.default.copyItem(at: oldPrefs, to: currentPrefs)
@@ -1528,11 +1329,6 @@ struct ClopApp: App {
     }
 }
 
-// Ziben custom: fully unlocked fork, always Pro
-@inline(__always) var proactive: Bool {
-    true
-}
-
 extension NSFilePromiseReceiver {
     static let swizzleReceivePromisedFiles: String = {
         let originalSelector = #selector(receivePromisedFiles(atDestination:options:operationQueue:reader:))
@@ -1556,7 +1352,7 @@ extension NSFilePromiseReceiver {
         guard let exc else {
             return
         }
-        log.error(exc.description)
+        log.error("\(exc.description)")
     }
 }
 
@@ -1639,10 +1435,10 @@ func setDefaultAppForUTI(_ uti: String, _ bundleID: String) -> OSStatus {
     LSSetDefaultRoleHandlerForContentType(uti as CFString, [LSRolesMask.viewer, LSRolesMask.editor], bundleID as CFString)
 }
 func resetDefaultPlayer() {
-    if let mp4Player = defaultAppForUTI("public.mpeg-4"), mp4Player.starts(with: "com.lowtechguys.Clop") {
-        setDefaultAppForUTI("public.mpeg-4", "com.apple.QuickTimePlayerX")
+    if let mp4Player = defaultAppForUTI("public.mpeg-4"), mp4Player.starts(with: "com.ziben.Clop") {
+        _ = setDefaultAppForUTI("public.mpeg-4", "com.apple.QuickTimePlayerX")
     }
-    if let movPlayer = defaultAppForUTI("com.apple.quicktime-movie"), movPlayer.starts(with: "com.lowtechguys.Clop") {
-        setDefaultAppForUTI("com.apple.quicktime-movie", "com.apple.QuickTimePlayerX")
+    if let movPlayer = defaultAppForUTI("com.apple.quicktime-movie"), movPlayer.starts(with: "com.ziben.Clop") {
+        _ = setDefaultAppForUTI("com.apple.quicktime-movie", "com.apple.QuickTimePlayerX")
     }
 }

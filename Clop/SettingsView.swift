@@ -9,8 +9,11 @@ import Defaults
 import Foundation
 import LaunchAtLogin
 import Lowtech
+import os
 import SwiftUI
 import System
+
+private let log = Logger(subsystem: LOG_SUBSYSTEM, category: "SettingsView")
 
 let TEXT_FIELD_OFFSET: CGFloat = if #available(macOS 15.0, *) {
     4
@@ -64,6 +67,21 @@ struct DirListView: View {
     @State var chooseFile = false
     @State var clopignoreHelpVisible = false
     var hideIgnoreRules = false
+
+    @Default(.dirsHideFloatingResult) var dirsHideFloatingResult
+
+    func showFloatingBinding(for dir: String) -> Binding<Bool> {
+        Binding(
+            get: { !dirsHideFloatingResult.contains(dir) },
+            set: { show in
+                if show {
+                    dirsHideFloatingResult.remove(dir)
+                } else {
+                    dirsHideFloatingResult.insert(dir)
+                }
+            }
+        )
+    }
 
     @ViewBuilder var ignoreRulesView: some View {
         if selectedDirs.count == 1, let dir = selectedDirs.first {
@@ -143,20 +161,48 @@ struct DirListView: View {
 
     }
 
+    func dirHasAutomation(_ dir: String) -> Bool {
+        Defaults[fileType.pipelineKey][dir]?.isEmpty == false
+    }
+
+    func navigateToAutomation(folder: String) {
+        settingsViewManager.scrollToFileType = fileType
+        settingsViewManager.highlightFolder = HighlightedFolderRequest(fileType: fileType, folder: folder)
+        settingsViewManager.tab = .automation
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             ScrollView {
                 Table(dirs.sorted(), selection: $selectedDirs) {
-                    TableColumn("Path", content: { dir in Text(dir.replacingOccurrences(of: HOME.string, with: "~")).mono(12) })
+                    TableColumn("Path") { dir in Text(dir.replacingOccurrences(of: HOME.string, with: "~")).mono(12) }
+                    TableColumn("Show floating results") { dir in
+                        Toggle("", isOn: showFloatingBinding(for: dir))
+                            .toggleStyle(.checkbox)
+                            .controlSize(.mini)
+                            .labelsHidden()
+                            .help("Show the floating thumbnail and progress when files in this folder are optimised")
+                    }
+                    .width(130)
+                    TableColumn("") { dir in
+                        Button(dirHasAutomation(dir) ? "Edit automation" : "Add automation") {
+                            navigateToAutomation(folder: dir)
+                        }
+                        .font(.round(10))
+                        .buttonStyle(.borderless)
+                        .foregroundColor(.accentColor)
+                    }
+                    .width(110)
                 }
-                .tableStyle(.bordered)
+                .tableStyle(.inset)
                 .frame(height: 150)
                 .disabled(!enabled)
                 .opacity(enabled ? 1 : 0.6)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
             }.frame(height: 150)
 
             HStack(spacing: 2) {
-                Button(action: { chooseFile = true }, label: { SwiftUI.Image(systemName: "plus").font(.bold(12)) })
+                Button(action: { chooseFile = true }, label: { SwiftUI.Image(systemName: "plus").font(.bold(12)).frame(width: 16, height: 16) })
                     .fileImporter(
                         isPresented: $chooseFile,
                         allowedContentTypes: [.directory],
@@ -166,7 +212,7 @@ struct DirListView: View {
                             case let .success(success):
                                 dirs = (dirs + success.map(\.path)).uniqued.without(NOT_ALLOWED_TO_WATCH)
                             case let .failure(failure):
-                                log.error(failure.localizedDescription)
+                                log.error("\(failure.localizedDescription)")
                             }
                         }
                     )
@@ -177,7 +223,7 @@ struct DirListView: View {
                         dirs = Set(dirs).without(selectedDirs)
                         selectedDirs = []
                     },
-                    label: { SwiftUI.Image(systemName: "minus").font(.bold(12)) }
+                    label: { SwiftUI.Image(systemName: "minus").font(.bold(12)).frame(width: 16, height: 16) }
                 )
                 .disabled(selectedDirs.isEmpty || !enabled)
                 Spacer()
@@ -225,7 +271,7 @@ struct DirListView: View {
             log.debug("Saving \(clopIgnore)")
             try text.write(toFile: clopIgnore, atomically: false, encoding: .utf8)
         } catch {
-            log.error(error.localizedDescription)
+            log.error("\(error.localizedDescription)")
         }
     }
 }
@@ -235,6 +281,8 @@ struct PDFSettingsView: View {
     @Default(.maxPDFSizeMB) var maxPDFSizeMB
     @Default(.maxPDFFileCount) var maxPDFFileCount
     @Default(.useAggressiveOptimisationPDF) var useAggressiveOptimisationPDF
+    @Default(.pdfDPI) var pdfDPI
+    @Default(.pdfDPIAggressive) var pdfDPIAggressive
     @Default(.enableAutomaticPDFOptimisations) var enableAutomaticPDFOptimisations
     @Default(.optimisedPDFBehaviour) var optimisedPDFBehaviour
     @Default(.sameFolderNameTemplatePDF) var sameFolderNameTemplatePDF
@@ -270,13 +318,46 @@ struct PDFSettingsView: View {
                 }
 
                 Toggle(isOn: $useAggressiveOptimisationPDF) {
-                    Text("Use more aggressive optimisation").regular(13)
+                    Text("Use aggressive optimisation by default").regular(13)
                         + Text("\nGenerates smaller files with slightly worse visual quality").round(11, weight: .regular).foregroundColor(.secondary)
                 }
+                PDFDPIPickerView(label: "Image DPI for normal optimisation", binding: $pdfDPI)
+                PDFDPIPickerView(label: "Image DPI for aggressive optimisation", binding: $pdfDPIAggressive, includeAdaptive: true)
             }
         }
         .scrollContentBackground(.hidden)
         .padding(4)
+    }
+}
+
+struct PDFDPIPickerView: View {
+    let label: String
+    @Binding var binding: Int
+    var includeAdaptive = false
+
+    var body: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(label).regular(13)
+                Text(
+                    includeAdaptive
+                        ? "Adaptive picks a per-PDF target based on the source image density. Specific values keep the picked DPI for every PDF."
+                        : "300 DPI keeps images at full resolution. Lower values can make the PDF appear less sharp."
+                )
+                .round(11, weight: .regular).foregroundColor(.secondary)
+            }
+            Spacer()
+            Picker("", selection: $binding) {
+                if includeAdaptive {
+                    Text("Adaptive").tag(PDF_DPI_ADAPTIVE)
+                }
+                ForEach(PDF_DPI_STOPS, id: \.self) { dpi in
+                    Text(dpi == PDF_DPI_NO_DOWNSAMPLE ? "\(dpi) (no downsample)" : "\(dpi)").tag(dpi)
+                }
+            }
+            .labelsHidden()
+            .fixedSize()
+        }
     }
 }
 
@@ -297,6 +378,7 @@ struct VideoSettingsView: View {
     @Default(.removeAudioFromVideos) var removeAudioFromVideos
     @Default(.convertAudioToAAC) var convertAudioToAAC
 
+    @Default(.videoEncoder) var videoEncoder
     #if arch(arm64)
         @Default(.useCPUIntensiveEncoder) var useCPUIntensiveEncoder
     #endif
@@ -342,27 +424,22 @@ struct VideoSettingsView: View {
                             .font(.mono(11))
                     }
                 }
+                Picker(selection: $videoEncoder) {
+                    ForEach(VideoEncoder.allCases, id: \.self) { encoder in
+                        Text(encoder.name).tag(encoder)
+                    }
+                } label: {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Video encoder").regular(13)
+                        Text(videoEncoder.description).round(11, weight: .regular).foregroundColor(.secondary)
+                    }
+                }
                 #if arch(arm64)
-                    Toggle(isOn: $adaptiveVideoSize) {
-                        Text("Adaptive optimisation").regular(13)
-                            + Text("\nUses the CPU intensive encoder for short workloads, and the battery efficient one for larger files").round(11, weight: .regular).foregroundColor(.secondary)
-                    }
-                    Toggle(isOn: $useCPUIntensiveEncoder.animation(.spring())) {
-                        Text("Use CPU intensive encoder").regular(13)
-                            + Text("\nGenerates smaller files with better visual quality but takes longer and uses more CPU").round(11, weight: .regular).foregroundColor(.secondary)
-                    }
-                    if useCPUIntensiveEncoder {
-                        Toggle(isOn: $useAggressiveOptimisationMP4) {
-                            Text("Aggressive optimisation").regular(13)
-                                + Text("\nDecrease visual quality and increase processing time for even smaller files").round(11, weight: .regular).foregroundColor(.secondary)
+                    if videoEncoder != .fast {
+                        Toggle(isOn: $adaptiveVideoSize) {
+                            Text("Adaptive optimisation").regular(13)
+                                + Text("\nFalls back to the fast encoder for large files to save time and battery").round(11, weight: .regular).foregroundColor(.secondary)
                         }
-                        .disabled(!useCPUIntensiveEncoder)
-                        .padding(.leading)
-                    }
-                #else
-                    Toggle(isOn: $useAggressiveOptimisationMP4) {
-                        Text("Use more aggressive optimisation").regular(13)
-                            + Text("\nGenerates smaller files with slightly worse visual quality but takes longer and uses more CPU").round(11, weight: .regular).foregroundColor(.secondary)
                     }
                 #endif
                 Toggle("Remove audio on optimised videos", isOn: $removeAudioFromVideos)
@@ -639,6 +716,98 @@ struct SpecificFolderNameTemplate: View {
             .foregroundColor(.secondary)
             .padding(6)
         }
+    }
+}
+
+struct AudioSettingsView: View {
+    @Default(.audioDirs) var audioDirs
+    @Default(.audioFormat) var audioFormat
+    @Default(.audioBitrate) var audioBitrate
+    @Default(.audioFormatsToSkip) var audioFormatsToSkip
+    @Default(.formatsToConvertToOutputAudio) var formatsToConvertToOutputAudio
+    @Default(.maxAudioSizeMB) var maxAudioSizeMB
+    @Default(.maxAudioFileCount) var maxAudioFileCount
+    @Default(.optimisedAudioBehaviour) var optimisedAudioBehaviour
+    @Default(.sameFolderNameTemplateAudio) var sameFolderNameTemplateAudio
+    @Default(.specificFolderNameTemplateAudio) var specificFolderNameTemplateAudio
+    @Default(.enableAutomaticAudioOptimisations) var enableAutomaticAudioOptimisations
+
+    var body: some View {
+        Form {
+            Section(header: SectionHeader(title: "Watch paths", subtitle: "Optimise audio files as they appear in these folders")) {
+                DirListView(fileType: .audio, dirs: $audioDirs, enabled: $enableAutomaticAudioOptimisations)
+            }
+            Section(header: SectionHeader(title: "Optimisation rules")) {
+                OptimisedFileBehaviourView(
+                    type: .audio, optimisedBehaviour: $optimisedAudioBehaviour,
+                    sameFolderNameTemplate: $sameFolderNameTemplateAudio,
+                    specificFolderNameTemplate: $specificFolderNameTemplateAudio
+                )
+                HStack {
+                    Text("Skip when audio files larger than").regular(13).padding(.trailing, 10)
+                    TextField("", value: $maxAudioSizeMB, formatter: BoundFormatter(min: 1, max: 10000))
+                        .multilineTextAlignment(.center)
+                        .frame(width: 70)
+                        .background(RoundedRectangle(cornerRadius: 6, style: .continuous).stroke(Color.gray, lineWidth: 1).scaleEffect(y: TEXT_FIELD_SCALE).offset(x: TEXT_FIELD_OFFSET))
+                    Text("MB").mono(13)
+                    Text("are copied or moved in watched folders").regular(13)
+                }
+                HStack {
+                    Text("Skip when more than").regular(13)
+                    TextField("", value: $maxAudioFileCount, formatter: BoundFormatter(min: 1, max: 100))
+                        .multilineTextAlignment(.center)
+                        .frame(width: 50)
+                        .background(RoundedRectangle(cornerRadius: 6, style: .continuous).stroke(Color.gray, lineWidth: 1).scaleEffect(y: TEXT_FIELD_SCALE).offset(x: TEXT_FIELD_OFFSET))
+                    Text(maxAudioFileCount == 1 ? "audio file is copied or moved in watched folders" : "audio files are copied or moved in watched folders").regular(13)
+                }
+                Picker(selection: $audioFormat) {
+                    ForEach(AudioFormat.allCases, id: \.self) { format in
+                        Text(format.name).tag(format)
+                    }
+                } label: {
+                    Text("Output format").regular(13)
+                }
+                .onChange(of: audioFormat) { newFormat in
+                    if newFormat.isLossless {
+                        audioBitrate = newFormat.defaultBitrate
+                    } else if audioBitrate >= 0, !newFormat.allowedBitrates.contains(audioBitrate) {
+                        audioBitrate = newFormat.defaultBitrate
+                    }
+                    if let ut = newFormat.utType {
+                        formatsToConvertToOutputAudio.remove(ut)
+                    }
+                }
+                if !audioFormat.isLossless {
+                    Picker(selection: $audioBitrate) {
+                        Text("1 step lower than input").tag(-1)
+                        Text("2 steps lower than input").tag(-2)
+                        Divider()
+                        ForEach(audioFormat.allowedBitrates, id: \.self) { bitrate in
+                            Text("\(bitrate) kbps").tag(bitrate)
+                        }
+                    } label: {
+                        Text("Bitrate").regular(13)
+                    }
+                }
+            }
+            if audioFormat != .sameAsInput, !audioFormat.isLossless {
+                Section(header: SectionHeader(title: "Compatibility", subtitle: "Converts selected formats to \(audioFormat.fileExtension) before optimisation")) {
+                    HStack {
+                        (Text("Convert to ").regular(13) + Text(audioFormat.fileExtension).mono(13)).padding(.trailing, 10)
+                        Spacer()
+
+                        ForEach(ALL_AUDIO_CONVERTIBLE_FORMATS.filter { $0 != audioFormat.utType }, id: \.identifier) { format in
+                            Button(format.preferredFilenameExtension ?? format.identifier) {
+                                formatsToConvertToOutputAudio.toggle(format)
+                            }.buttonStyle(ToggleButton(isOn: .oneway { formatsToConvertToOutputAudio.contains(format) }))
+                                .font(.mono(11))
+                        }
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
     }
 }
 
@@ -1059,7 +1228,8 @@ struct AboutSettingsView: View {
     @Default(.enableSentry) var enableSentry
 
     var proText: some View {
-        Text(proactive ? "Pro" : "")
+        // Ziben custom: fully unlocked fork
+        Text("Pro")
     }
 
     var body: some View {
@@ -1075,10 +1245,10 @@ struct AboutSettingsView: View {
                     .offset(x: 5, y: 14)
             }
             Text("Clop")
-                .font(.round(64, weight: .black))
+                .round(64, weight: .black)
                 .padding(.top, -30)
             Text((Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "v2")
-                .font(.mono(16, weight: .regular))
+                .mono(16, weight: .regular)
                 .foregroundColor(.secondary)
 
             if let updater = um.updater {
@@ -1134,89 +1304,95 @@ struct DropZoneSettingsView: View {
     @ObservedObject var shortcutsManager = SHM
 
     var zones: some View {
-        Section(header: SectionHeader(title: "Preset zones", subtitle: "Optimise and pass files through Shortcuts by dragging them to these zones")) {
+        Section(header: SectionHeader(title: "Preset zones", subtitle: "Drag files to these zones to run actions like crop, convert, copy and more")) {
             Toggle(isOn: $onlyShowPresetZonesOnControlTapped) {
                 Text("Tap ^ Control to show preset zones").regular(13)
                     + Text("\nToggle preset zones by tapping ^ Control instead of by holding it").round(11, weight: .regular).foregroundColor(.secondary)
             }
 
-            HStack(spacing: 6) {
-                Text("Icon").bold(13).frame(width: 30, alignment: .leading)
-                Divider().foregroundColor(.secondary)
-                Text("Name").bold(13).frame(width: 100, alignment: .leading)
-                Divider().foregroundColor(.secondary)
-                Text("Appears for").bold(13).frame(width: 100, alignment: .leading)
-                Divider().foregroundColor(.secondary)
-                Text("Shortcut").bold(13).frame(width: 150, alignment: .leading)
-                Divider().foregroundColor(.secondary)
-            }
-            .padding(4)
-
-            VStack {
-                ForEach(presetZones) { zone in
-                    if let editingZone, editingZone.id == zone.id {
-                        PresetZoneEditor(zone: $editingZone)
-                    } else {
-                        zoneItem(zone: zone)
+            VStack(spacing: 6) {
+                let types: [ClopFileType?] = [.image, .video, .audio, .pdf, nil]
+                ForEach(types.indices, id: \.self) { i in
+                    let t = types[i]
+                    let matching = presetZones.filter { $0.type == t }
+                    if !matching.isEmpty {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(t.map { $0 == .pdf ? "PDF" : $0.description.capitalized } ?? "Any type")
+                                .semibold(10)
+                                .foregroundColor(t?.color ?? .secondary)
+                                .padding(.top, i > 0 ? 4 : 0)
+                            ForEach(matching) { zone in
+                                if let editingZone, editingZone.id == zone.id {
+                                    PresetZoneEditor(zone: $editingZone)
+                                } else {
+                                    zoneItem(zone: zone)
+                                }
+                            }
+                        }
                     }
                 }
-                PresetZoneEditor(zone: .constant(nil)).opacity(editingZone == nil ? 1 : 0.3)
+                if editingZone == nil {
+                    Divider().padding(.vertical, 8)
+                    Text("Create a new preset for a specific file type")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .hfill(.leading)
+                    PresetZoneEditor(zone: .constant(nil))
+                }
             }
         }
     }
 
     func zoneItem(zone: PresetZone) -> some View {
-        HStack(spacing: 6) {
-            SwiftUI.Image(systemName: zone.icon).frame(width: 30, alignment: .center)
-            Divider().foregroundColor(.secondary)
-            Text(zone.name)
-                .minimumScaleFactor(0.5)
-                .frame(width: 100, alignment: .leading)
-            Divider().foregroundColor(.secondary)
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 6) {
+                SwiftUI.Image(systemName: zone.icon)
+                    .font(.regular(13))
+                    .frame(width: 20, alignment: .center)
+                    .foregroundColor(.secondary)
+                Text(zone.name)
+                    .medium(12)
+                SwiftUI.Image(systemName: zone.pipeline.skipOptimisation ? "bolt.slash" : "bolt.fill")
+                    .font(.regular(8))
+                    .foregroundColor(zone.pipeline.skipOptimisation ? .secondary.opacity(0.3) : .orange.opacity(0.5))
 
-            Label(zone.type != nil ? "\(zone.type!.description)s" : "Any file", systemImage: zone.type?.symbolName ?? "inset.filled.square.dashed")
-                .frame(width: 100, alignment: .leading)
-            Divider().foregroundColor(.secondary)
+                Spacer()
 
-            HStack {
-                Link(destination: zone.shortcut.url) {
-                    HStack {
-                        Text(zone.shortcut.name)
-                        Spacer()
-                        SwiftUI.Image(systemName: "arrow.up.right.square")
-                    }
-                }
-            }
-            .frame(width: 150, alignment: .leading)
-            Divider().foregroundColor(.secondary)
-            Spacer()
-
-            Button(
-                action: { editingZone = zone },
-                label: {
+                Button(action: { editingZone = zone }) {
                     SwiftUI.Image(systemName: "pencil")
-                        .fontWeight(.bold)
+                        .font(.regular(10))
                 }
-            )
-            .frame(width: 30)
-            .help("Edit this preset zone")
-            Button(
-                role: .destructive,
-                action: {
+                .buttonStyle(.plain)
+                .contentShape(Rectangle())
+                Button(role: .destructive, action: {
                     presetZones = presetZones.filter { $0.id != zone.id }
-                },
-                label: {
+                }) {
                     SwiftUI.Image(systemName: "trash")
-                        .foregroundColor(Color.systemRed.opacity(0.8))
-                        .fontWeight(.bold)
+                        .foregroundColor(Color.systemRed.opacity(0.6))
+                        .font(.regular(10))
                 }
-            )
-            .frame(width: 30)
-            .help("Delete this preset zone")
-        }
-        .padding(4)
-        .tag(zone.id)
+                .buttonStyle(.plain)
+                .contentShape(Rectangle())
+            }
 
+            let resolved = zone.resolvedPipeline
+            Text(resolved.displayText.isEmpty ? "no steps configured" : resolved.displayText)
+                .mono(10.5)
+                .foregroundColor(.secondary.opacity(0.7))
+                .lineLimit(2)
+                .truncationMode(.tail)
+                .padding(.leading, 26)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.primary.opacity(0.025))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.06), lineWidth: 0.5)
+        )
     }
     var settings: some View {
         Form {
@@ -1278,18 +1454,6 @@ struct DropZoneSettingsView: View {
         }
         .hfill()
         .padding(.top)
-        .onChange(of: shortcutsManager.cacheIsValid) { cacheIsValid in
-            if !cacheIsValid {
-                log.debug("Re-fetching Shortcuts from AutomationSettingsView.onChange")
-                shortcutsManager.fetch()
-            }
-        }
-        .onAppear {
-            if !shortcutsManager.cacheIsValid {
-                log.debug("Re-fetching Shortcuts from AutomationSettingsView.onAppear")
-                shortcutsManager.fetch()
-            }
-        }
     }
 }
 
@@ -1304,6 +1468,9 @@ struct FloatingSettingsView: View {
     @Default(.autoClearAllCompactResultsAfter) var autoClearAllCompactResultsAfter
     @Default(.floatingResultsCorner) var floatingResultsCorner
     @Default(.alwaysShowCompactResults) var alwaysShowCompactResults
+    @Default(.floatingResultActions) var floatingResultActions
+    @Default(.compactResultActions) var compactResultActions
+    @Default(.showCopyClearButtons) var showCopyClearButtons
 
     @Default(.dismissFloatingResultOnDrop) var dismissFloatingResultOnDrop
     @Default(.dismissFloatingResultOnUpload) var dismissFloatingResultOnUpload
@@ -1316,7 +1483,7 @@ struct FloatingSettingsView: View {
         Form {
             Toggle(isOn: $enableFloatingResults) {
                 Text("Show floating results").regular(13)
-                    + Text("\n\nDisabling this will make Clop run in an UI-less mode, but keep optimising files in the background")
+                    + Text("\n\nDisabling this will make Clop run in an UI-less mode, but keep optimising files in the background. Drop zone can be disabled separately in the Drop zone tab")
                     .round(10, weight: .regular)
                     .foregroundColor(.secondary)
             }
@@ -1338,6 +1505,7 @@ struct FloatingSettingsView: View {
             Section(header: SectionHeader(title: "Full layout")) {
                 Toggle("Show hat icon", isOn: $showFloatingHatIcon)
                 Toggle("Show images", isOn: $showImages)
+                Toggle("Show Copy all / Clear all buttons", isOn: $showCopyClearButtons)
                 Text("Dismiss result after")
                 Toggle("drag and drop outside", isOn: $dismissFloatingResultOnDrop).padding(.leading, 20)
                 Toggle("upload to Dropshare", isOn: $dismissFloatingResultOnUpload).padding(.leading, 20)
@@ -1419,6 +1587,14 @@ struct FloatingSettingsView: View {
                 Text("only for preview")
                     .round(10)
                     .foregroundColor(.secondary)
+
+                Divider().frame(width: 100).padding(.vertical, 4)
+
+                if compact {
+                    ActionListPicker(label: "Side actions", vertical: false, actions: $compactResultActions)
+                } else {
+                    ActionListPicker(label: "Side actions", vertical: true, actions: $floatingResultActions)
+                }
             }
         }
         .hfill()
@@ -1435,8 +1611,14 @@ struct GeneralSettingsView: View {
     @Default(.showMenubarIcon) var showMenubarIcon
     @Default(.optimiseTIFF) var optimiseTIFF
     @Default(.optimiseVideoClipboard) var optimiseVideoClipboard
+    @Default(.optimiseAudioClipboard) var optimiseAudioClipboard
+    @Default(.optimisePDFClipboard) var optimisePDFClipboard
     @Default(.optimiseImagePathClipboard) var optimiseImagePathClipboard
     @Default(.enableClipboardOptimiser) var enableClipboardOptimiser
+    @Default(.clipboardIgnoredAppBundleIds) var clipboardIgnoredAppBundleIds
+    @Default(.appendClipboardResults) var appendClipboardResults
+    @Default(.copyConsecutiveClipboardImages) var copyConsecutiveClipboardImages
+    @Default(.clipboardAccumulationTimeout) var clipboardAccumulationTimeout
     @Default(.stripMetadata) var stripMetadata
     @Default(.preserveColorMetadata) var preserveColorMetadata
     @Default(.preserveDates) var preserveDates
@@ -1467,20 +1649,77 @@ struct GeneralSettingsView: View {
             Section(header: SectionHeader(title: "Clipboard")) {
                 Toggle(isOn: $enableClipboardOptimiser) {
                     Text("Enable clipboard optimiser").regular(13)
-                        + Text("\nWatch for copied images and optimise them automatically").round(11, weight: .regular).foregroundColor(.secondary)
+                        + Text("\nWatch for copied data and optimise it automatically").round(11, weight: .regular).foregroundColor(.secondary)
                 }
-                Toggle(isOn: $optimiseTIFF) {
-                    Text("Optimise copied TIFF data").regular(13)
-                        + Text("\nUsually coming from graphical design apps, it's sometimes better to not optimise it").round(11, weight: .regular).foregroundColor(.secondary)
+                Group {
+                    Toggle(isOn: .constant(true)) {
+                        Text("Image data").regular(13)
+                            + Text("\nCopied image data (e.g. screenshots)").round(11, weight: .regular).foregroundColor(.secondary)
+                    }.disabled(true)
+                    Toggle(isOn: $optimiseTIFF) {
+                        Text("TIFF data").regular(13)
+                            + Text("\nUsually from graphical design apps, sometimes better left alone").round(11, weight: .regular).foregroundColor(.secondary)
+                    }
+                    Toggle(isOn: $optimiseImagePathClipboard) {
+                        Text("Image files").regular(13)
+                            + Text("\nCopying images from Finder results in file paths instead of image data").round(11, weight: .regular).foregroundColor(.secondary)
+                    }
+                    Toggle(isOn: $optimiseVideoClipboard) {
+                        Text("Video files").regular(13)
+                            + Text("\nOptimise copied video file paths").round(11, weight: .regular).foregroundColor(.secondary)
+                    }
+                    Toggle(isOn: $optimiseAudioClipboard) {
+                        Text("Audio files").regular(13)
+                            + Text("\nOptimise copied audio file paths").round(11, weight: .regular).foregroundColor(.secondary)
+                    }
+                    Toggle(isOn: $optimisePDFClipboard) {
+                        Text("PDF files").regular(13)
+                            + Text("\nOptimise copied PDF file paths").round(11, weight: .regular).foregroundColor(.secondary)
+                    }
+                }
+                .disabled(!enableClipboardOptimiser)
+                .padding(.leading, 20)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Ignored apps").regular(13)
+                    Text("Skip clipboard optimisation when one of these apps is in the foreground")
+                        .round(11, weight: .regular)
+                        .foregroundColor(.secondary)
+                    IgnoredAppsPicker(bundleIds: $clipboardIgnoredAppBundleIds, enabled: enableClipboardOptimiser)
+                        .padding(.top, 2)
+                }
+                .padding(.leading, 20)
+                .disabled(!enableClipboardOptimiser)
+                .opacity(enableClipboardOptimiser ? 1 : 0.6)
+
+                Toggle(isOn: $appendClipboardResults) {
+                    Text("Keep all clipboard results").regular(13)
+                        + Text("\nShow each clipboard optimisation as a separate result instead of replacing the previous one").round(11, weight: .regular).foregroundColor(.secondary)
                 }.disabled(!enableClipboardOptimiser)
-                Toggle(isOn: $optimiseVideoClipboard) {
-                    Text("Optimise copied video files").regular(13)
-                        + Text("\nSystem pasteboard can't hold video data, only video file paths.\nThis option automatically optimises copied paths").round(11, weight: .regular).foregroundColor(.secondary)
-                }.disabled(!enableClipboardOptimiser)
-                Toggle(isOn: $optimiseImagePathClipboard) {
-                    Text("Optimise copied image files").regular(13)
-                        + Text("\nCopying images from Finder results in file paths instead of image data.\nThis option automatically optimises copied paths").round(11, weight: .regular).foregroundColor(.secondary)
-                }.disabled(!enableClipboardOptimiser)
+                if appendClipboardResults {
+                    Toggle(isOn: $copyConsecutiveClipboardImages) {
+                        Text("Accumulate optimised images in clipboard").regular(13)
+                            + Text("\nEach new optimised image is added to a file list in the clipboard, so you can paste them all at once into image editor apps like Pixelmator or Affinity, or into notes").round(11, weight: .regular)
+                            .foregroundColor(.secondary)
+                    }
+                    .disabled(!enableClipboardOptimiser)
+                    .padding(.leading, 20)
+
+                    HStack {
+                        Text("Reset after").regular(13)
+                        Picker("", selection: $clipboardAccumulationTimeout) {
+                            Text("10 seconds").tag(10)
+                            Text("30 seconds").tag(30)
+                            Text("1 minute").tag(60)
+                            Text("2 minutes").tag(120)
+                            Text("5 minutes").tag(300)
+                            Text("Never").tag(0)
+                        }
+                        .frame(width: 140)
+                        Text("of inactivity").regular(13)
+                    }
+                    .padding(.leading, 20)
+                }
             }
 
             Section(header: SectionHeader(title: "Working directory", subtitle: "Where temporary files and backups are stored and where the optimised files are saved")) {
@@ -1490,6 +1729,11 @@ struct GeneralSettingsView: View {
                         .multilineTextAlignment(.center)
                         .font(.mono(12))
                         .background(RoundedRectangle(cornerRadius: 6, style: .continuous).stroke(Color.gray, lineWidth: 1).scaleEffect(y: TEXT_FIELD_SCALE).offset(x: TEXT_FIELD_OFFSET))
+                    Button("Reset") {
+                        workdir = Defaults.Keys.workdir.defaultValue
+                    }
+                    .buttonStyle(.bordered)
+                    .font(.regular(11))
                 }
 
                 Picker("Periodically cleanup files older than", selection: $workdirCleanupInterval) {
@@ -1527,7 +1771,7 @@ struct GeneralSettingsView: View {
                     Text("30 seconds").tag(30000)
                     Text("60 seconds").tag(60000)
                 } label: {
-                    Text("Re-optimisation protection window").regular(13)
+                    Text("Re-optimisation loop detection window").regular(13)
                         + Text("\nIncrease if files on iCloud Drive get optimised twice").round(11, weight: .regular).foregroundColor(.secondary)
                 }
             }
@@ -1538,16 +1782,53 @@ struct GeneralSettingsView: View {
     }
 }
 
+struct HighlightedFolderRequest: Equatable {
+    let fileType: ClopFileType
+    let folder: String
+}
+
 class SettingsViewManager: ObservableObject {
     @Published var tab: SettingsView.Tabs = SWIFTUI_PREVIEW ? .floating : .general
     @Published var windowOpen = false
+    @Published var scrollToFileType: ClopFileType?
+    @Published var highlightFolder: HighlightedFolderRequest?
 }
 
 let settingsViewManager = SettingsViewManager()
 
+struct HideSidebarToggleIfAvailable: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(macOS 14.0, *) {
+            content.toolbar(removing: .sidebarToggle)
+        } else {
+            content
+        }
+    }
+}
+
+struct SettingsSidebarRow: View {
+    let tab: SettingsView.Tabs
+
+    var body: some View {
+        NavigationLink(value: tab) {
+            Label {
+                Text(tab.title)
+            } icon: {
+                SwiftUI.Image(systemName: tab.symbol)
+                    .foregroundStyle(.white)
+                    .font(.system(size: 11, weight: .semibold))
+                    .frame(width: 20, height: 20)
+                    .background(tab.tint.gradient, in: RoundedRectangle(cornerRadius: 5))
+            }
+        }
+    }
+}
+
 struct SettingsView: View {
-    enum Tabs: Int, Hashable {
-        case general, video, images, pdf, dropzone, floating, keys, automation, about
+    enum Tabs: Int, Hashable, CaseIterable, Identifiable {
+        case general, video, audio, images, pdf, dropzone, floating, keys, automation, about
+
+        var id: Int { rawValue }
 
         var next: Tabs {
             Tabs(rawValue: rawValue + 1) ?? .general
@@ -1557,6 +1838,50 @@ struct SettingsView: View {
             Tabs(rawValue: rawValue - 1) ?? .automation
         }
 
+        var title: String {
+            switch self {
+            case .general: "General"
+            case .video: "Video"
+            case .audio: "Audio"
+            case .images: "Images"
+            case .pdf: "PDF"
+            case .dropzone: "Drop Zone"
+            case .floating: "Floating Results"
+            case .keys: "Keyboard Shortcuts"
+            case .automation: "Automation"
+            case .about: "About"
+            }
+        }
+
+        var symbol: String {
+            switch self {
+            case .general: "gearshape"
+            case .video: "video"
+            case .audio: "waveform"
+            case .images: "photo"
+            case .pdf: "doc"
+            case .dropzone: "square.stack.3d.up"
+            case .floating: "rectangle.stack"
+            case .keys: "command.square"
+            case .automation: "hammer"
+            case .about: "info.circle"
+            }
+        }
+
+        var tint: Color {
+            switch self {
+            case .general: .gray
+            case .video: .blue
+            case .audio: .indigo
+            case .images: .green
+            case .pdf: .red
+            case .dropzone: .orange
+            case .floating: .teal
+            case .keys: .brown
+            case .automation: .pink
+            case .about: .purple
+            }
+        }
     }
 
     @ObservedObject var svm = settingsViewManager
@@ -1567,99 +1892,61 @@ struct SettingsView: View {
         }
     }
 
-    var tabView: some View {
-        let t = TabView(selection: $svm.tab) {
-            GeneralSettingsView()
-                .tabItem {
-                    Label("General", systemImage: "gear")
-                }
-                .tag(Tabs.general)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            VideoSettingsView()
-                .tabItem {
-                    Label("Video", systemImage: "video")
-                }
-                .tag(Tabs.video)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            ImagesSettingsView()
-                .tabItem {
-                    Label("Images", systemImage: "photo")
-                }
-                .tag(Tabs.images)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            PDFSettingsView()
-                .tabItem {
-                    Label("PDF", systemImage: "doc")
-                }
-                .tag(Tabs.pdf)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            DropZoneSettingsView()
-                .tabItem {
-                    Label("Drop zone", systemImage: "square.stack")
-                }
-                .tag(Tabs.dropzone)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            FloatingSettingsView()
-                .tabItem {
-                    Label("Floating results", systemImage: "square.stack")
-                }
-                .tag(Tabs.floating)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            KeysSettingsView()
-                .tabItem {
-                    Label("Keyboard shortcuts", systemImage: "command.square")
-                }
-                .tag(Tabs.keys)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            AutomationSettingsView()
-                .tabItem {
-                    Label("Automation", systemImage: "hammer")
-                }
-                .tag(Tabs.automation)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            AboutSettingsView()
-                .tabItem {
-                    Label("About", systemImage: "info.circle")
-                }
-                .tag(Tabs.about)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    var sidebar: some View {
+        List(selection: $svm.tab) {
+            ForEach(Tabs.allCases, id: \.self) { tab in
+                SettingsSidebarRow(tab: tab)
+            }
         }
-
-        if #available(macOS 15.0, *) {
-            return t.tabViewStyle(.grouped)
-        } else {
-            return t
-        }
+        .listStyle(.sidebar)
+        .navigationSplitViewColumnWidth(min: 220, ideal: 240, max: 280)
+        .modifier(HideSidebarToggleIfAvailable())
     }
 
     var settings: some View {
-        ZStack(alignment: .topTrailing) {
-            tabView
-                .hfill()
-                .padding(.top, 20)
-                .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { notif in
-                    guard !SWIFTUI_PREVIEW, let window = notif.object as? NSWindow else { return }
-                    if window.title == "Settings" {
-                        log.debug("Starting settings tab key monitor")
-                        tabKeyMonitor.start()
-                    }
-                }
-                .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification)) { notif in
-                    guard !SWIFTUI_PREVIEW, let window = notif.object as? NSWindow else { return }
-                    if window.title == "Settings" {
-                        log.debug("Stopping settings tab key monitor")
-                        tabKeyMonitor.stop()
-                    }
-                }
-
-            Button("Quit", role: .destructive) { NSApp.terminate(nil) }
-                .buttonStyle(.borderedProminent)
-                .offset(x: -10, y: -15)
-            if svm.tab == .about {
-                MadeBy().fill(.bottomTrailing).offset(x: -6, y: 0)
+        NavigationSplitView {
+            sidebar
+        } detail: {
+            detailView
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .navigationTitle(svm.tab.title)
+        }
+        .navigationSplitViewStyle(.balanced)
+        .formStyle(.grouped)
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { notif in
+            guard !SWIFTUI_PREVIEW, let window = notif.object as? NSWindow else { return }
+            if window.title == "Settings" {
+                log.debug("Starting settings tab key monitor")
+                tabKeyMonitor.start()
             }
         }
-        .formStyle(.grouped)
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification)) { notif in
+            guard !SWIFTUI_PREVIEW, let window = notif.object as? NSWindow else { return }
+            if window.title == "Settings" {
+                log.debug("Stopping settings tab key monitor")
+                tabKeyMonitor.stop()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var detailView: some View {
+        switch svm.tab {
+        case .general: GeneralSettingsView()
+        case .video: VideoSettingsView()
+        case .audio: AudioSettingsView()
+        case .images: ImagesSettingsView()
+        case .pdf: PDFSettingsView()
+        case .dropzone: DropZoneSettingsView()
+        case .floating: FloatingSettingsView()
+        case .keys: KeysSettingsView()
+        case .automation: AutomationSettingsView()
+        case .about:
+            AboutSettingsView()
+                .overlay(alignment: .bottomTrailing) {
+                    MadeBy().offset(x: -6, y: 0)
+                }
+        }
     }
 
 }
@@ -1687,8 +1974,17 @@ struct SettingsView: View {
     return event
 }
 
+struct FloatingSettingsView_Previews: PreviewProvider {
+    static var previews: some View {
+        FloatingSettingsView()
+            .formStyle(.grouped)
+            .frame(width: WINDOW_MIN_SIZE.width, height: WINDOW_MIN_SIZE.height, alignment: .topLeading)
+    }
+}
+
 struct SettingsView_Previews: PreviewProvider {
     static var previews: some View {
+        let _ = (settingsViewManager.windowOpen = true)
         SettingsView()
             .frame(minWidth: WINDOW_MIN_SIZE.width, maxWidth: .infinity, minHeight: WINDOW_MIN_SIZE.height, maxHeight: .infinity)
     }

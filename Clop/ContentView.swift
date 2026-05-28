@@ -19,18 +19,19 @@ struct MenuView: View {
     @ObservedObject var um = UM
     @ObservedObject var pm = PM
     @ObservedObject var om = OM
+    @ObservedObject var wdm = WDM
+    @ObservedObject var lastApp = LastFocusedAppTracker.shared
     @Environment(\.openWindow) var openWindow
 
     @Default(.keyComboModifiers) var keyComboModifiers
     @Default(.useAggressiveOptimisationGIF) var useAggressiveOptimisationGIF
     @Default(.useAggressiveOptimisationJPEG) var useAggressiveOptimisationJPEG
     @Default(.useAggressiveOptimisationPNG) var useAggressiveOptimisationPNG
-    @Default(.useAggressiveOptimisationMP4) var useAggressiveOptimisationMP4
+    @Default(.videoEncoder) var videoEncoder
     @Default(.cliInstalled) var cliInstalled
     @Default(.pauseAutomaticOptimisations) var pauseAutomaticOptimisations
     @Default(.allowClopToAppearInScreenshots) var allowClopToAppearInScreenshots
-    @Default(.activeImagePreset) var activeImagePreset
-    @Default(.activeVideoPreset) var activeVideoPreset
+    @Default(.clipboardIgnoredAppBundleIds) var clipboardIgnoredAppBundleIds
 
     @State var cliInstallResult: String?
 
@@ -53,7 +54,7 @@ struct MenuView: View {
             if !useAggressiveOptimisationGIF ||
                 !useAggressiveOptimisationJPEG ||
                 !useAggressiveOptimisationPNG ||
-                !useAggressiveOptimisationMP4
+                videoEncoder != .slowHighQuality
             {
                 Button("Optimise (aggressive)") {
                     Task.init { try? await optimiseLastClipboardItem(aggressiveOptimisation: true) }
@@ -68,24 +69,18 @@ struct MenuView: View {
                 Task.init { try? await quickLookLastClipboardItem() }
             }.keyboardShortcut(" ", modifiers: keyComboModifiers.eventModifiers)
 
-        }
-
-        Section("Presets") {
-            Menu("Image: \(IMAGE_PRESETS[activeImagePreset]?.name ?? "Chat")") {
-                ForEach(Array(IMAGE_PRESETS.keys.sorted()), id: \.self) { key in
-                    let preset = IMAGE_PRESETS[key]!
-                    Button(activeImagePreset == key ? "\(preset.name) ✓" : preset.name) {
-                        activeImagePreset = key
+            if let bundleID = lastApp.bundleId {
+                let appName = lastApp.name ?? bundleID
+                Toggle("Ignore clipboard events from \(appName)", isOn: Binding(
+                    get: { clipboardIgnoredAppBundleIds.contains(bundleID) },
+                    set: { ignore in
+                        if ignore {
+                            clipboardIgnoredAppBundleIds.insert(bundleID)
+                        } else {
+                            clipboardIgnoredAppBundleIds.remove(bundleID)
+                        }
                     }
-                }
-            }
-            Menu("Video: \(VIDEO_PRESETS[activeVideoPreset]?.name ?? "Web")") {
-                ForEach(Array(VIDEO_PRESETS.keys.sorted()), id: \.self) { key in
-                    let preset = VIDEO_PRESETS[key]!
-                    Button(activeVideoPreset == key ? "\(preset.name) ✓" : preset.name) {
-                        activeVideoPreset = key
-                    }
-                }
+                ))
             }
         }
 
@@ -151,6 +146,34 @@ struct MenuView: View {
             }
         }
 
+        if wdm.hasSessions {
+            Menu("Sending files (\(wdm.sessions.count))") {
+                ForEach(wdm.sessions) { session in
+                    Menu(session.fileNames) {
+                        Button("Copy link") {
+                            session.copyLink()
+                        }
+                        if session.downloadCount > 0 {
+                            Text("Downloaded \(session.downloadCount) time\(session.downloadCount == 1 ? "" : "s")")
+                        }
+                        Button("Stop sending") {
+                            wdm.stopSession(session)
+                        }
+                    }
+                }
+                Divider()
+                Button("Copy all links") {
+                    let links = wdm.sessions.map(\.shareURL).joined(separator: "\n")
+                    let pb = NSPasteboard.general
+                    pb.clearContents()
+                    pb.setString(links, forType: .string)
+                }
+                Button("Stop all") {
+                    wdm.stopAll()
+                }
+            }
+        }
+
         Menu("About...") {
             Button("Contact the developer") {
                 NSWorkspace.shared.open(contactURL())
@@ -168,6 +191,7 @@ struct MenuView: View {
             #endif
             Text("Version: v\(Bundle.main.version)")
         }
+
 
         Button(um.newVersion != nil ? "v\(um.newVersion!) update available" : "Check for updates") {
             checkForUpdates()

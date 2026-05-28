@@ -1,10 +1,12 @@
 import Defaults
 import Foundation
 import Lowtech
+import LowtechPro
+import os
 import SwiftUI
 import System
 
-import LowtechPro
+private let log = Logger(subsystem: LOG_SUBSYSTEM, category: "CompactResult")
 
 struct CompactResult: View {
     static let improvementColor = Color(light: FloatingResult.darkBlue, dark: FloatingResult.yellow)
@@ -93,6 +95,48 @@ struct CompactResult: View {
                 .foregroundColor(.fg.warm)
                 .fixedSize()
                 .disabled(!optimiser.canCrop())
+        }
+    }
+
+    @ViewBuilder var bitrateDiff: some View {
+        if optimiser.type.isAudio, let oldBitrate = optimiser.oldBitrate, !sm.selecting {
+            HStack(spacing: 3) {
+                let hideOldBitrate = optimiser.newBitrate != nil && optimiser.newBitrate! != oldBitrate
+                if !hideOldBitrate {
+                    Text("\(oldBitrate) kbps")
+                }
+                if let newBitrate = optimiser.newBitrate, newBitrate != oldBitrate {
+                    if !hideOldBitrate {
+                        SwiftUI.Image(systemName: "arrow.right")
+                    }
+                    Text("\(newBitrate) kbps")
+                }
+            }
+            .lineLimit(1)
+            .font(.round(10, weight: .medium))
+            .foregroundColor(.fg.warm)
+            .fixedSize()
+        }
+    }
+
+    @ViewBuilder var dpiDiff: some View {
+        if optimiser.type.isPDF, let oldDPI = optimiser.oldDPI, !sm.selecting {
+            HStack(spacing: 3) {
+                let hideOldDPI = optimiser.newDPI != nil && optimiser.newDPI! != oldDPI
+                if !hideOldDPI {
+                    Text("\(oldDPI) DPI")
+                }
+                if let newDPI = optimiser.newDPI, newDPI != oldDPI {
+                    if !hideOldDPI {
+                        SwiftUI.Image(systemName: "arrow.right")
+                    }
+                    Text("\(newDPI) DPI")
+                }
+            }
+            .lineLimit(1)
+            .font(.round(10, weight: .medium))
+            .foregroundColor(.fg.warm)
+            .fixedSize()
         }
     }
 
@@ -222,21 +266,18 @@ struct CompactResult: View {
                         fileSizeDiff
                         Spacer()
                         sizeDiff
+                        bitrateDiff
+                        dpiDiff
                     }
                     if !sm.selecting {
                         ActionButtons(optimiser: optimiser, size: 18)
                             .padding(.top, 2)
-                            .hfill(.leading)
-                            .roundbg(
-                                radius: 10, verticalPadding: 3, horizontalPadding: 2,
-                                color: .primary.opacity(colorScheme == .dark ? 0.1 : 0.04)
-                            )
                             .focusable(false)
-                            .frame(height: 26)
                     }
                 }
             }
         }
+        .animation(nil, value: optimiser.running)
         .padding(.top, 3)
         .frame(height: 70)
         .hfill(.leading)
@@ -256,8 +297,8 @@ struct CompactResult: View {
         }
         .onHover(perform: updateHover(_:))
         .ifLet(optimiser.url, transform: { view, url in
-            view
-                .onDrag {
+            view.if(!optimiser.showDownscaleSlider) { v in
+                v.onDrag {
                     guard !preview else {
                         return NSItemProvider()
                     }
@@ -267,10 +308,8 @@ struct CompactResult: View {
                         optimiser.remove(after: 100, withAnimation: true)
                     }
                     return NSItemProvider(object: url as NSURL)
-                } preview: {
-                    DragPreview(optimiser: optimiser)
                 }
-
+            }
         })
     }
 
@@ -303,7 +342,7 @@ struct CompactCloseStopButton: View {
             label: {
                 HStack(spacing: 2) {
                     SwiftUI.Image(systemName: optimiser.running ? "stop.fill" : "xmark").font(.heavy(8))
-                    Text(optimiser.running ? "Stop" : "Close").font(.medium(9))
+                    Text(optimiser.running ? "Stop" : "Close").medium(9)
                 }
             }
         )
@@ -318,7 +357,16 @@ struct OverlayMessageView: View {
     @State var opacity = 1.0
 
     var body: some View {
-        if optimiser.overlayMessage.isNotEmpty {
+        if optimiser.stepIndicator.isNotEmpty, !optimiser.showDownscaleSlider {
+            Text(optimiser.stepIndicator)
+                .foregroundColor(color == .black ? .white : .primary)
+                .roundbg(radius: 12, padding: 6, color: color)
+                .fill()
+                .background(
+                    VisualEffectBlur(material: .hudWindow, blendingMode: .withinWindow, state: .active, appearance: color == .black ? .vibrantDark : .none).scaleEffect(1.1)
+                )
+                .transaction { $0.animation = nil }
+        } else if optimiser.overlayMessage.isNotEmpty {
             Text(optimiser.overlayMessage)
                 .foregroundColor(color == .black ? .white : .primary)
                 .roundbg(radius: 12, padding: 6, color: color)
@@ -558,6 +606,22 @@ struct CompactResultList: View {
             }
             .help("Stop all running optimisations and dismiss all results (\(keyComboModifiers.str) esc)")
 
+            SwiftUI.Image(systemName: "line.3.horizontal")
+                .font(.medium(11))
+                .frame(height: 18)
+                .padding(.horizontal, 8)
+                .background(RoundedRectangle(cornerRadius: 7).fill(Color.inverted.opacity(0.9)))
+                .foregroundColor(.mauvish)
+                .help("Drag all")
+                .onDrag {
+                    let urls = optimisers.compactMap(\.url)
+                    let provider = NSItemProvider()
+                    for url in urls {
+                        provider.registerObject(url as NSURL, visibility: .all)
+                    }
+                    return provider
+                }
+
             if !floatingResultsCorner.isTrailing {
                 Spacer()
                 UpdateButton(short: !showCompactImages)
@@ -655,8 +719,16 @@ struct CompactResultList: View {
                                     sm.selection = []
                                 }
                                 BatchCropButton()
-                                Menu("Downscale") {
-                                    BatchDownscaleMenu(optimisers: sm.selection.compactMap { opt($0) })
+                                let selectedOptimisers = sm.selection.compactMap { opt($0) }
+                                if selectedOptimisers.contains(where: { !$0.type.isAudio }) {
+                                    Menu("Downscale") {
+                                        BatchDownscaleMenu(optimisers: selectedOptimisers.filter { !$0.type.isAudio })
+                                    }
+                                }
+                                if selectedOptimisers.contains(where: \.type.isAudio) {
+                                    Menu("Bitrate") {
+                                        BatchBitrateMenu(optimisers: selectedOptimisers.filter(\.type.isAudio))
+                                    }
                                 }
                             }
                             .font(.round(10))
@@ -760,7 +832,7 @@ struct DragPreview: View {
                     .resizable()
                     .scaledToFill()
             } else {
-                SwiftUI.Image(systemName: optimiser.type.isVideo ? "video.fill" : (optimiser.type.isPDF ? "doc.fill" : "photo.fill"))
+                SwiftUI.Image(systemName: optimiser.type.systemImage)
                     .resizable()
                     .scaledToFit()
                     .foregroundColor(.primary)
@@ -825,7 +897,7 @@ struct ToggleCompactResultListButton: View {
                 .buttonStyle(FlatButton(color: .clear, textColor: .primary, radius: 7, verticalPadding: 2))
 
                 Text(showList ? "Hide" : "Show")
-                    .font(.medium(10))
+                    .medium(10)
                     .roundbg(radius: 5, padding: 2, color: .inverted.opacity(0.9), noFG: true)
                     .foregroundColor(.primary)
                     .opacity(hovering ? 1 : 0)
@@ -890,7 +962,8 @@ struct CompactPreview: View {
         clipEnd.finish(oldBytes: 750_190, newBytes: 211_932, oldSize: NSSize(width: 1880, height: 1000), newSize: NSSize(width: 1200, height: 600))
 
         let proErrorOpt = Optimiser(id: Optimiser.IDs.pro, type: .unknown)
-        proErrorOpt.finish(error: "Free version limits reached", notice: "Only 5 file optimisations per session\nare included in the free version")
+        proErrorOpt.isPreview = true
+        proErrorOpt.finish(error: "You've optimised 5 files this session", notice: "Get Clop Pro to remove the limit and unlock all features.\nRelaunch the app to reset the counter.")
 
         let noticeOpt = Optimiser(id: "notice", type: .unknown, operation: "")
         noticeOpt.finish(notice: "**Paused**\nNext clipboard event will be ignored")
@@ -962,5 +1035,33 @@ struct CompactResult_Previews: PreviewProvider {
     static var previews: some View {
         CompactPreview()
             .background(LinearGradient(colors: [Color.red, .orange, .blue], startPoint: .topLeading, endPoint: .bottomTrailing))
+    }
+}
+
+@MainActor
+struct CompactPreviewAllStates: View {
+    static var om: OptimisationManager = {
+        let o = CompactPreview.om
+        let proErrorOpt = Optimiser(id: Optimiser.IDs.pro, type: .unknown)
+        proErrorOpt.isPreview = true
+        proErrorOpt.finish(error: "You've optimised 5 files this session", notice: "Get Clop Pro to remove the limit and unlock all features.\nRelaunch the app to reset the counter.")
+        o.optimisers.insert(proErrorOpt)
+        mainActor {
+            o.failedCount += 1
+            o.visibleCount += 1
+        }
+        return o
+    }()
+
+    var body: some View {
+        FloatingResultContainer(om: Self.om, isPreview: true)
+    }
+}
+
+struct CompactResultAllStates_Previews: PreviewProvider {
+    static var previews: some View {
+        CompactPreviewAllStates()
+            .background(LinearGradient(colors: [Color.red, .orange, .blue], startPoint: .topLeading, endPoint: .bottomTrailing))
+            .previewDisplayName("All States")
     }
 }

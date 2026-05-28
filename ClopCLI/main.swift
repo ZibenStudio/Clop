@@ -8,9 +8,12 @@
 import ArgumentParser
 import Cocoa
 import Foundation
+import os
 import PDFKit
 import System
 import UniformTypeIdentifiers
+
+private let log = Logger(subsystem: LOG_SUBSYSTEM, category: "main")
 
 let HOME_DIR_REGEX = (try? Regex("^/*?\(NSHomeDirectory())(/)?", as: (Substring, Substring?).self))?.ignoresCase()
 
@@ -27,7 +30,7 @@ extension URL {
 }
 
 extension UserDefaults {
-    static let app: UserDefaults? = .init(suiteName: "com.lowtechguys.Clop")
+    static let app: UserDefaults? = .init(suiteName: "com.ziben.Clop")
 }
 
 var printSemaphore = DispatchSemaphore(value: 1)
@@ -398,6 +401,21 @@ enum ImageFormat: String, CaseIterable, Equatable, Decodable, ExpressibleByArgum
         case .webp: .webP
         }
     }
+}
+
+func parsePDFDPIArgument(_ value: String?) throws -> Int? {
+    guard let value, !value.isEmpty else { return nil }
+    if value.lowercased() == "adaptive" {
+        return PDF_DPI_ADAPTIVE
+    }
+    let allowed = PDF_DPI_STOPS.map(String.init).joined(separator: ", ")
+    guard let int = Int(value) else {
+        throw ValidationError("Invalid --pdf-dpi value '\(value)': expected 'adaptive' or one of \(allowed)")
+    }
+    guard PDF_DPI_STOPS.contains(int) else {
+        throw ValidationError("--pdf-dpi must be 'adaptive' or one of \(allowed)")
+    }
+    return int
 }
 
 struct Clop: ParsableCommand {
@@ -832,6 +850,9 @@ struct Clop: ParsableCommand {
         @Flag(name: .shortAndLong, help: "Use aggressive optimisation")
         var aggressive = false
 
+        @Option(name: .long, help: "PDF aggressive DPI: 'adaptive' or one of \(PDF_DPI_STOPS.map(String.init).joined(separator: ", ")). Overrides the app's stored aggressive DPI setting for this run.")
+        var pdfDpi: String?
+
         @Flag(name: .long, inversion: .prefixedNo, help: "Convert detail heavy images to JPEG and low-detail ones to PNG for better compression")
         var adaptiveOptimisation: Bool = UserDefaults.app?.bool(forKey: "adaptiveImageSize") ?? false
 
@@ -928,6 +949,7 @@ struct Clop: ParsableCommand {
         }
 
         mutating func run() throws {
+            let parsedPdfDpi = try parsePDFDPIArgument(pdfDpi)
             try sendRequest(urls: urls, showProgress: !noProgress, async: async, gui: gui, json: json, operation: "cropping") {
                 var out = normalizeRelativeOutput(output)
                 if urls.count == 1, let url = urls.first, let outExt = out?.filePath?.extension, let inExt = url.filePath?.extension, outExt == inExt {
@@ -945,7 +967,8 @@ struct Clop: ParsableCommand {
                     adaptiveOptimisation: adaptiveOptimisation,
                     source: "cli",
                     output: out,
-                    removeAudio: removeAudio
+                    removeAudio: removeAudio,
+                    pdfDPI: parsedPdfDpi
                 )
             }
         }
@@ -953,7 +976,7 @@ struct Clop: ParsableCommand {
 
     struct Downscale: ParsableCommand {
         static let configuration = CommandConfiguration(
-            abstract: "Downscale and optimise images and videos by a certain factor."
+            abstract: "Downscale and optimise images, videos and audio files by a certain factor. For audio, the factor is applied to the bitrate."
         )
 
         @Flag(name: .shortAndLong, help: "Whether to show or hide the floating result (the usual Clop UI)")
@@ -967,6 +990,9 @@ struct Clop: ParsableCommand {
 
         @Flag(name: .shortAndLong, help: "Use aggressive optimisation")
         var aggressive = false
+
+        @Option(name: .long, help: "PDF aggressive DPI: 'adaptive' or one of \(PDF_DPI_STOPS.map(String.init).joined(separator: ", ")). Overrides the app's stored aggressive DPI setting for this run.")
+        var pdfDpi: String?
 
         @Flag(name: .long, inversion: .prefixedNo, help: "Convert detail heavy images to JPEG and low-detail ones to PNG for better compression")
         var adaptiveOptimisation = false
@@ -1017,12 +1043,12 @@ struct Clop: ParsableCommand {
         """)
         var output: String? = nil
 
-        @Option(help: "Makes the image or video smaller by a certain amount (1.0 means no resize, 0.5 means half the size)")
+        @Option(help: "Makes the image, video or audio smaller by a certain amount (1.0 means no change, 0.5 means half the size / half the bitrate)")
         var factor = 0.5
 
         var urls: [URL] = []
 
-        @Argument(help: "Images, videos or URLs to downscale (can be a file, folder, or list of files)")
+        @Argument(help: "Images, videos, audio files or URLs to downscale (can be a file, folder, or list of files)")
         var items: [String] = []
 
         mutating func validate() throws {
@@ -1044,6 +1070,7 @@ struct Clop: ParsableCommand {
         }
 
         mutating func run() throws {
+            let parsedPdfDpi = try parsePDFDPIArgument(pdfDpi)
             try sendRequest(urls: urls, showProgress: !noProgress, async: async, gui: gui, json: json, operation: "downscaling") {
                 var out = normalizeRelativeOutput(output)
                 if urls.count == 1, let url = urls.first, let outExt = out?.filePath?.extension, let inExt = url.filePath?.extension, outExt == inExt {
@@ -1061,7 +1088,8 @@ struct Clop: ParsableCommand {
                     adaptiveOptimisation: adaptiveOptimisation,
                     source: "cli",
                     output: out,
-                    removeAudio: removeAudio
+                    removeAudio: removeAudio,
+                    pdfDPI: parsedPdfDpi
                 )
             }
         }
@@ -1069,7 +1097,7 @@ struct Clop: ParsableCommand {
 
     struct Optimise: ParsableCommand {
         static let configuration = CommandConfiguration(
-            abstract: "Optimise images, videos and PDFs."
+            abstract: "Optimise images, videos, audio files and PDFs."
         )
 
         @Flag(name: .shortAndLong, help: "Whether to show or hide the floating result (the usual Clop UI)")
@@ -1083,6 +1111,9 @@ struct Clop: ParsableCommand {
 
         @Flag(name: .shortAndLong, help: "Use aggressive optimisation")
         var aggressive = false
+
+        @Option(name: .long, help: "PDF aggressive DPI: 'adaptive' or one of \(PDF_DPI_STOPS.map(String.init).joined(separator: ", ")). Overrides the app's stored aggressive DPI setting for this run.")
+        var pdfDpi: String?
 
         @Flag(name: .long, inversion: .prefixedNo, help: "Convert detail heavy images to JPEG and low-detail ones to PNG for better compression")
         var adaptiveOptimisation: Bool = UserDefaults.app?.bool(forKey: "adaptiveImageSize") ?? false
@@ -1146,7 +1177,7 @@ struct Clop: ParsableCommand {
 
         var urls: [URL] = []
 
-        @Argument(help: "Images, videos, PDFs or URLs to optimise (can be a file, folder, or list of files)")
+        @Argument(help: "Images, videos, audio files, PDFs or URLs to optimise (can be a file, folder, or list of files)")
         var items: [String] = []
 
         mutating func validate() throws {
@@ -1171,6 +1202,7 @@ struct Clop: ParsableCommand {
         }
 
         mutating func run() throws {
+            let parsedPdfDpi = try parsePDFDPIArgument(pdfDpi)
             try sendRequest(urls: urls, showProgress: !noProgress, async: async, gui: gui, json: json, operation: "optimisation") {
                 var out = normalizeRelativeOutput(output)
                 if urls.count == 1, let url = urls.first, let outExt = out?.filePath?.extension, let inExt = url.filePath?.extension, outExt == inExt {
@@ -1188,14 +1220,15 @@ struct Clop: ParsableCommand {
                     adaptiveOptimisation: adaptiveOptimisation,
                     source: "cli",
                     output: out,
-                    removeAudio: removeAudio
+                    removeAudio: removeAudio,
+                    pdfDPI: parsedPdfDpi
                 )
             }
         }
     }
 
     static let configuration = CommandConfiguration(
-        abstract: "Clop: optimise, crop and downscale images, videos and PDFs",
+        abstract: "Clop: optimise, crop and downscale images, videos, audio files and PDFs",
         subcommands: [
             Optimise.self,
             Crop.self,
@@ -1305,7 +1338,7 @@ actor ProgressPrinter {
             if itemStr.count > 50 {
                 itemStr = "..." + itemStr.suffix(40)
             }
-            if let desc = mainThread { progress.localizedAdditionalDescription } {
+            if let desc = mainThread({ progress.localizedAdditionalDescription }) {
                 printerr("\(itemStr): \(desc) \(progressBarStr) (\(progressInt)%)")
             } else {
                 printerr("\(itemStr): \(progressBarStr) \(progressInt)%")
@@ -1339,13 +1372,25 @@ actor ProgressPrinter {
             } else {
                 ""
             }
+            let bitrateChangeStr = if let old = response.oldBitrate, let new = response.newBitrate, old != new {
+                " [\("\(old) kbps".dim()) \(ARROW) \("\(new) kbps".yellow())]"
+            } else {
+                ""
+            }
+            let dpiChangeStr = if let old = response.oldDPI, let new = response.newDPI, old != new {
+                " [\("\(old) DPI".dim()) \(ARROW) \("\(new) DPI".yellow())]"
+            } else if let old = response.oldDPI, response.newDPI == nil || response.newDPI == old {
+                " [\("\(old) DPI".dim())]"
+            } else {
+                ""
+            }
             let savedAs = if let original = response.forURL.filePath ?? response.convertedFrom?.filePath, let optimised = response.path.filePath, original != optimised {
                 " saved as \(optimised.shellString.underline())".dim()
             } else {
                 ""
             }
             print(
-                "\(CHECKMARK) \(response.forURL.shellString.underline()): \(response.oldBytes.humanSize.foregroundColor(isSmaller ? .red : .green)) \(ARROW) \(response.newBytes.humanSize.foregroundColor(isSmaller ? .green : .red).bold())\(resolutionChangeStr)\(percentageSaved)\(savedAs)"
+                "\(CHECKMARK) \(response.forURL.shellString.underline()): \(response.oldBytes.humanSize.foregroundColor(isSmaller ? .red : .green)) \(ARROW) \(response.newBytes.humanSize.foregroundColor(isSmaller ? .green : .red).bold())\(resolutionChangeStr)\(bitrateChangeStr)\(dpiChangeStr)\(percentageSaved)\(savedAs)"
             )
         }
         for response in errors.values.sorted(by: { $0.forURL.path < $1.forURL.path }) {

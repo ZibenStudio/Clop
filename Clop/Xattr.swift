@@ -1,4 +1,7 @@
 import Foundation
+import os
+
+private let log = Logger(subsystem: LOG_SUBSYSTEM, category: "Xattr")
 
 enum Xattr {
     /** Error type */
@@ -6,7 +9,7 @@ enum Xattr {
         let localizedDescription = String(utf8String: strerror(errno))
     }
 
-    static let queue = DispatchQueue(label: "\(Bundle.main.bundleIdentifier ?? "com.lowtechguys.Clop").xattr", attributes: .concurrent)
+    static let queue = DispatchQueue(label: "\(Bundle.main.bundleIdentifier ?? "com.ziben.Clop").xattr", attributes: .concurrent)
 
     static func withTimeout(_ timeout: TimeInterval, _ block: @escaping () -> Void) {
         let workItem = DispatchWorkItem(block: block)

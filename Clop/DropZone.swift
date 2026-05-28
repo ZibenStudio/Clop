@@ -1,21 +1,33 @@
 import Defaults
 import Foundation
 import Lowtech
+import os
 import SwiftUI
 import System
 import UniformTypeIdentifiers
+
+private let log = Logger(subsystem: LOG_SUBSYSTEM, category: "DropZone")
+let MAC26 = if #available(macOS 26.0, *) {
+    true
+} else {
+    false
+}
 
 class DragManager: ObservableObject {
     @MainActor @Published var dragHovering = false
     @MainActor @Published var itemsToOptimise: [ClipboardType] = []
     @Atomic var optimisationCount = 0
 
+    @MainActor @Published var dropZoneAtCursor = false
+
     @MainActor var fileType: ClopFileType? {
         itemsToOptimise.allSatisfy(\.isImage)
             ? .image
             : itemsToOptimise.allSatisfy(\.isVideo)
                 ? .video
-                : itemsToOptimise.allSatisfy(\.isPDF) ? .pdf : nil
+                : itemsToOptimise.allSatisfy(\.isAudio)
+                    ? .audio
+                    : itemsToOptimise.allSatisfy(\.isPDF) ? .pdf : nil
     }
 
     @MainActor @Published var dropped = true {
@@ -41,6 +53,7 @@ class DragManager: ObservableObject {
             }
         }
     }
+
     @MainActor @Published var showDropZone = false {
         didSet {
             guard showDropZone != oldValue else {
@@ -48,9 +61,18 @@ class DragManager: ObservableObject {
             }
             if showDropZone {
                 log.debug("Option pressed, showing drop zone")
-                showFloatingThumbnails()
+                if dropZoneAtCursor {
+                    showFloatingThumbnailsAtCursor()
+                } else {
+                    showFloatingThumbnails()
+                }
             } else {
                 log.debug("Option pressed, hiding drop zone")
+                hideCursorDropZone()
+                dropZoneAtCursor = false
+                if !Defaults[.enableFloatingResults], floatingResultsWindow.isVisible {
+                    floatingResultsWindow.close()
+                }
             }
         }
     }
@@ -68,6 +90,62 @@ class DragManager: ObservableObject {
 
 @MainActor
 let DM = DragManager()
+
+private struct ZonePreviewHoverModifier: ViewModifier {
+    let preview: Bool
+    let disabled: Bool
+    let index: Int
+    let zone: PresetZone?
+    @Binding var selectedPresetIndex: Int?
+    @Binding var selectedPreset: PresetZone?
+
+    func body(content: Content) -> some View {
+        if preview {
+            content
+                .onHover { h in
+                    if h {
+                        withAnimation(.bouncy) {
+                            selectedPresetIndex = index
+                            selectedPreset = zone
+                        }
+                    }
+                }
+                .disabled(disabled)
+                .onHover { h in
+                    if h, disabled {
+                        withAnimation(.bouncy) {
+                            selectedPresetIndex = nil
+                            selectedPreset = nil
+                        }
+                    }
+                }
+        } else {
+            content
+        }
+    }
+}
+
+private struct GlassBackground<S: Shape>: ViewModifier {
+    let shape: S
+
+    func body(content: Content) -> some View {
+        if #available(macOS 26.0, *) {
+            content.glassEffect(.regular, in: shape)
+        } else {
+            content.background(.thinMaterial, in: shape)
+        }
+    }
+}
+
+extension View {
+    func glassBackground(in shape: some Shape) -> some View {
+        modifier(GlassBackground(shape: shape))
+    }
+
+    func dropZoneGlassBackground() -> some View {
+        glassBackground(in: DROPZONE_SHAPE)
+    }
+}
 
 struct DropZonePresetsViewDelegate: DropDelegate {
     let preset: PresetZone?
@@ -110,7 +188,7 @@ struct DropZonePresetsViewDelegate: DropDelegate {
         }
 
         // Ziben custom: removed Pro free-limit counter bump
-        return optimiseDroppedItems(info.itemProviders(for: IMAGE_FORMATS + VIDEO_FORMATS + [.plainText, .utf8PlainText, .url, .fileURL, .aliasFile, .pdf]), copy: NSEvent.modifierFlags.contains(.option), preset: preset)
+        return optimiseDroppedItems(info.itemProviders(for: IMAGE_FORMATS + AUDIO_FORMATS + VIDEO_FORMATS + [.plainText, .utf8PlainText, .url, .fileURL, .aliasFile, .pdf]), copy: NSEvent.modifierFlags.contains(.option), preset: preset)
     }
 }
 
@@ -154,10 +232,52 @@ struct DropZonePresetsView: View {
             .scaledToFit()
             .frame(width: 21, height: 21)
             .padding(6)
-            .background(
-                roundRect(5, fill: .bg.warm.opacity(colorScheme == .dark ? 0.6 : 0.4))
-                    .shadow(color: .black.opacity(0.5), radius: 5, x: 0, y: 4)
-            )
+//            .background(
+//                roundRect(5, fill: .bg.warm.opacity(colorScheme == .dark ? 0.6 : 0.4))
+//                    .shadow(color: .black.opacity(0.5), radius: 5, x: 0, y: 4)
+//            )
+    }
+
+    func zoneAction(zone: PresetZone?) {
+        guard let w = NSApp.keyWindow, w.title == "Settings" else {
+            settingsViewManager.tab = .dropzone
+            WM.open("settings")
+            focus()
+            return
+        }
+        editingZone = zone
+        showPresetEditor = true
+    }
+
+    @ViewBuilder
+    func zoneLabel(zone: PresetZone?, nextPreset: Bool, hovered: Bool, index: Int) -> some View {
+        let isLeft = index % 2 == 0
+
+        VStack(spacing: 2) {
+            zoneIcon(systemName: zone.map(\.icon) ?? (nextPreset ? "plus.square.dashed" : "square.dashed"))
+                .rotation3DEffect(.degrees(hovered ? 170 : 0), axis: (x: 0, y: 1, z: 0), perspective: 1.2)
+
+            Text(zone.map(\.name) ?? (nextPreset ? "Add preset" : "No preset"))
+                .round(10)
+                .foregroundColor(nextPreset ? .fg.warm.opacity(0.7) : .secondary)
+                .multilineTextAlignment(.center)
+                .lineLimit(2)
+                .minimumScaleFactor(0.5)
+                .frame(width: DROPZONE_SIZE.width / 2, height: 14)
+        }
+        .frame(width: DROPZONE_SIZE.width / 2 - 2, height: DROPZONE_SIZE.height / 2)
+        .padding(.vertical, 4)
+        .padding(isLeft ? .trailing : .leading, 4)
+    }
+
+    @ViewBuilder
+    func zonePresetEditorSheet(zone: PresetZone?) -> some View {
+        Form {
+            PresetZoneEditor(zone: zone != nil ? $editingZone : .constant(nil), type: type) {
+                showPresetEditor = false
+            }
+            .frame(width: 560)
+        }.formStyle(.grouped)
     }
 
     @ViewBuilder
@@ -168,87 +288,39 @@ struct DropZonePresetsView: View {
         let hovered = selectedPresetIndex == index
         let top = index < 2
 
-        Button(action: {
-            guard let w = NSApp.keyWindow, w.title == "Settings" else {
-                settingsViewManager.tab = .dropzone
-                WM.open("settings")
-                focus()
-                return
-            }
-            editingZone = zone
-            showPresetEditor = true
-        }) {
-            VStack(spacing: hovered ? 2 : 5) {
-                zoneIcon(systemName: zone.map(\.icon) ?? (nextPreset ? "plus.square.dashed" : "square.dashed"))
-                    .rotation3DEffect(.degrees(hovered ? 170 : 0), axis: (x: 0, y: 1, z: 0), perspective: 1.2)
-
-                Text(zone.map(\.name) ?? (nextPreset ? "Add preset" : "No preset"))
-                    .round(10)
-                    .foregroundColor(nextPreset ? .fg.warm.opacity(0.7) : .secondary)
-                    .multilineTextAlignment(.center)
-                    .lineLimit(2)
-                    .minimumScaleFactor(0.5)
-                    .frame(width: DROPZONE_SIZE.width / 2, height: 14)
-            }
-            .frame(width: DROPZONE_SIZE.width / 2 - 2, height: DROPZONE_SIZE.height / 2)
-            .padding(top ? .top : .bottom, 4)
+        Button(action: { zoneAction(zone: zone) }) {
+            zoneLabel(zone: zone, nextPreset: nextPreset, hovered: hovered, index: index)
         }
-        .buttonStyle(
-            FlatButton(
-                color: .primary.opacity(0.05), textColor: nextPreset ? .fg.warm.opacity(0.5) : .primary.opacity(0.8),
-                radius: 0, shadowSize: 0, hoverColorEffects: false, hoverScaleEffects: false
-            )
-        )
+        .buttonStyle(.plain)
         .sheet(isPresented: $showPresetEditor) {
-            Form {
-                PresetZoneEditor(zone: zone != nil ? $editingZone : .constant(nil), type: type) {
-                    showPresetEditor = false
-                }
-                .fixedSize()
-            }.formStyle(.grouped)
+            zonePresetEditorSheet(zone: zone)
         }
-        .if(preview) {
-            $0.onHover { h in
-                if h {
-                    withAnimation(.bouncy) {
-                        selectedPresetIndex = index
-                        selectedPreset = zone
-                    }
-                }
-            }
-            .disabled(disabled)
-            .onHover { h in
-                if h, disabled {
-                    withAnimation(.bouncy) {
-                        selectedPresetIndex = nil
-                        selectedPreset = nil
-                    }
-                }
-            }
-        }
+        .modifier(ZonePreviewHoverModifier(
+            preview: preview, disabled: disabled, index: index, zone: zone,
+            selectedPresetIndex: $selectedPresetIndex, selectedPreset: $selectedPreset
+        ))
         .background {
             (cmdPressed ? Color.red : Color.peach).opacity(hovered ? 0.3 : 0.0)
-                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                .scaleEffect(0.90)
-                .padding(top ? .top : .bottom, 2)
+                .clipShape(DROPZONE_SHAPE)
         }
-        .shadow(color: Color.black.opacity(hovered ? 0.5 : 0.0), radius: 5, x: 0, y: top ? 3 : -3)
+
         .if(enableDragAndDrop && !preview) {
-            $0.onDrop(
-                of: IMAGE_FORMATS + VIDEO_FORMATS + [.plainText, .utf8PlainText, .url, .fileURL, .aliasFile, .pdf],
-                delegate: DropZonePresetsViewDelegate(preset: zone, isNextPreset: nextPreset) { h in
-                    selectedPresetIndex = h && !disabled ? index : nil
-                    selectedPreset = h && !disabled ? zone : nil
-                }
-            )
-            .background(DragPileView().fill(.center))
+            $0.dropZoneGlassBackground()
+                .onDrop(
+                    of: IMAGE_FORMATS + VIDEO_FORMATS + AUDIO_FORMATS + [.plainText, .utf8PlainText, .url, .fileURL, .aliasFile, .pdf],
+                    delegate: DropZonePresetsViewDelegate(preset: zone, isNextPreset: nextPreset) { h in
+                        selectedPresetIndex = h && !disabled ? index : nil
+                        selectedPreset = h && !disabled ? zone : nil
+                    }
+                )
+                .background(DragPileView().fill(.center))
         }
     }
 
     var cmdPressed: Bool { keysManager.lcmd || keysManager.rcmd }
 
     var body: some View {
-        Grid(horizontalSpacing: 0, verticalSpacing: 0) {
+        Grid(horizontalSpacing: 2, verticalSpacing: 2) {
             GridRow {
                 zoneView(index: 0)
                 zoneView(index: 1)
@@ -283,6 +355,8 @@ struct DropZonePresetsView: View {
                 imagePresetZones.append(presetZone)
             case .video:
                 videoPresetZones.append(presetZone)
+            case .audio:
+                anyFilePresetZones.append(presetZone)
             case .pdf:
                 pdfPresetZones.append(presetZone)
             case nil:
@@ -296,15 +370,14 @@ struct DropZonePresetsView: View {
 }
 
 struct DropZoneView: View {
-    var blurredBackground = true
     @Default(.floatingResultsCorner) var floatingResultsCorner
     @Default(.showFloatingHatIcon) var showFloatingHatIcon
     @Default(.enableDragAndDrop) var enableDragAndDrop
 
     @ObservedObject var dragManager = DM
     @ObservedObject var keysManager = KM
-    @Namespace var namespace
     @Environment(\.preview) var preview
+    @Environment(\.colorScheme) var colorScheme
 
     @State var rotation: Angle = .degrees(0)
     @State var hovering = false
@@ -321,77 +394,67 @@ struct DropZoneView: View {
         VStack {
             if dragManager.showPresetZones || presetFileType != nil {
                 DropZonePresetsView(type: presetFileType ?? dragManager.fileType, selectedPreset: $selectedPreset)
-                    .background(
-                        roundRect(14, fill: .sunYellow.opacity(cmdPressed ? 0.5 : 0.0))
-                            .overlay(roundRect(14, stroke: .black.opacity(cmdPressed ? 0.7 : 0.0), lineWidth: 3))
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
             } else {
-                if hoverState {
-                    SwiftUI.Image(systemName: "livephoto")
-                        .font(.bold(hoverState ? 50 : 0))
-                        .padding(hoverState ? 3 : 0)
-                        .rotationEffect(rotation)
-                        .onAppear {
-                            guard !SWIFTUI_PREVIEW else { return }
+                Text("Drop to optimise")
+                    .round(14, weight: .heavy)
+                    .padding(.top, 10)
+
+                SwiftUI.Image(systemName: "livephoto")
+                    .font(.bold(36))
+                    .foregroundStyle(colorScheme == .dark ? Color.orange : Color.hotRed)
+                    .padding(1)
+                    .rotationEffect(rotation)
+                    .onChange(of: hoverState) { hovering in
+                        if hovering {
                             withAnimation(.linear(duration: 4).repeatForever(autoreverses: false)) {
                                 rotation = .degrees(359)
                             }
+                        } else {
+                            withAnimation(.spring) {
+                                rotation = .degrees(0)
+                            }
                         }
-                        .onDisappear {
-                            rotation = .degrees(0)
-                        }
-                }
+                    }
 
                 VStack(spacing: -1) {
-                    Text(hoverState ? "Drop to optimise" : "Drop here to optimise")
-                        .font(.system(size: hoverState ? 16 : 14, weight: hoverState ? .heavy : .semibold, design: .rounded))
-                        .padding(.bottom, 6)
-
                     Text("^: show preset zones")
                         .medium(10)
                         .foregroundColor(.primary)
                         .opacity(0.8)
-                    if !hoverState {
-                        Text("⌥: dismiss this drop zone")
-                            .medium(10)
-                            .foregroundColor(.primary)
-                            .opacity(0.8)
-                    }
+                    Text(dragManager.dropZoneAtCursor ? "⌥: hide drop zone" : "⌥: show drop zone at cursor")
+                        .medium(10)
+                        .foregroundColor(.primary)
+                        .opacity(0.8)
                     Text("⌘: use aggressive optimisation")
                         .medium(10)
-                        .foregroundColor(keysManager.flags.sideIndependentModifiers.contains(.command) ? .mauvish : .primary)
+                        .foregroundColor(keysManager.flags.sideIndependentModifiers.contains(.command) ? .red : .primary)
                         .opacity(0.8)
                         .padding(.bottom, 6)
                 }
                 .lineLimit(1)
                 .multilineTextAlignment(.center)
                 .fixedSize()
-                .matchedGeometryEffect(id: "text", in: namespace)
             }
         }
         .frame(
-            width: hoverState ? DROPZONE_SIZE.width : nil,
-            height: hoverState ? DROPZONE_SIZE.height : nil,
+            width: DROPZONE_SIZE.width,
+            height: DROPZONE_SIZE.height,
             alignment: .center
         )
+        .opacity(hoverState ? 1.0 : 0.85)
+        .animation(.easeOut, value: hoverState)
         .padding(.horizontal, DROPZONE_PADDING.width)
         .padding(.vertical, DROPZONE_PADDING.height)
-        .background(
-            blurredBackground
-                ? VisualEffectBlur(material: .hudWindow, blendingMode: preview ? .withinWindow : .behindWindow, state: .active)
-                    .shadow(color: .black.opacity(0.2), radius: 5, x: 0, y: 3).any
-                    .overlay(Color.calmGreen.opacity(0.05))
-                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                    .any
-                : Color.calmGreen.opacity(0.25)
-                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                    .any
-        )
-        .onHover { hovering in
-            withAnimation(.fastSpring) {
-                self.hovering = hovering
+        .overlay {
+            if !dragManager.showPresetZones {
+                DROPZONE_SHAPE.stroke(Color.bg.primary.opacity(0.1), lineWidth: 4)
+                    .shadow(color: colorScheme == .dark ? Color.orange : Color.hotRed, radius: 3)
+                    .allowsHitTesting(false)
             }
+        }
+        .scaleEffect(hoverState ? 1.02 : 1.0)
+        .onHover { hovering in
+            self.hovering = hovering
         }
     }
 
@@ -399,6 +462,9 @@ struct DropZoneView: View {
         HStack {
             FlipGroup(if: !floatingResultsCorner.isTrailing) {
                 draggingOutsideView
+                    .if(!dragManager.showPresetZones) {
+                        $0.dropZoneGlassBackground()
+                    }
                     .contentShape(Rectangle())
 
                 SwiftUI.Image("clop")
@@ -416,8 +482,15 @@ struct DropZoneView: View {
                 dragManager.showPresetZones = ctrlPressed
             }
         }
+        .onChange(of: dragManager.showPresetZones) { showing in
+            // Clear any stale preset selection when preset zones hide, so a
+            // subsequent drop on the main zone doesn't inherit it.
+            if !showing {
+                selectedPreset = nil
+            }
+        }
         .if(enableDragAndDrop && !preview && !dragManager.showPresetZones) {
-            $0.onDrop(of: IMAGE_FORMATS + VIDEO_FORMATS + [.plainText, .utf8PlainText, .url, .fileURL, .aliasFile, .pdf], delegate: self)
+            $0.onDrop(of: IMAGE_FORMATS + VIDEO_FORMATS + AUDIO_FORMATS + [.plainText, .utf8PlainText, .url, .fileURL, .aliasFile, .pdf], delegate: self)
                 .background(DragPileView().fill(.center))
         }
     }
@@ -426,6 +499,7 @@ struct DropZoneView: View {
 let HAT_ICON_SIZE: CGFloat = 30
 let DROPZONE_SIZE: CGSize = THUMB_SIZE.scaled(by: 0.5)
 let DROPZONE_PADDING = CGSize(width: 14, height: 10)
+let DROPZONE_SHAPE = RoundedRectangle(cornerRadius: 22, style: .continuous)
 
 extension DropZoneView: DropDelegate {
     func dropEntered(info: DropInfo) {
@@ -462,7 +536,10 @@ extension DropZoneView: DropDelegate {
         } else {
             info.itemProviders(for: [.plainText, .utf8PlainText, .url, .fileURL, .aliasFile, .pdf])
         }
-        return optimiseDroppedItems(itemProviders, copy: NSEvent.modifierFlags.contains(.option), preset: selectedPreset, thumbnails: thumbnails, filenames: filenames)
+        // Main drop zone: onDrop is gated on !showPresetZones, so this only
+        // fires when the user dropped on the main area. selectedPreset may
+        // still be stale from a prior preset zone drop, so ignore it here.
+        return optimiseDroppedItems(itemProviders, copy: NSEvent.modifierFlags.contains(.option), preset: nil, thumbnails: thumbnails, filenames: filenames)
     }
 }
 
@@ -494,6 +571,84 @@ struct DragPileView: NSViewRepresentable {
     }
 }
 
+/// Run the preset pipeline on the result of `optimiseItem`, matching the pattern in `optimiseFile`.
+@MainActor
+private func runPresetPipeline(_ pipeline: Pipeline?, result: ClipboardType?, id: String) async {
+    guard let pipeline, !pipeline.isEmpty, let result, let optimiser = opt(id) else { return }
+    let path = result.path
+    let fileType: ClopFileType = path.isImage ? .image : path.isVideo ? .video : path.isPDF ? .pdf : .audio
+    do {
+        let (resultFile, _) = try await executePipeline(pipeline, file: path, source: .dropZone, optimiser: optimiser, fileType: fileType)
+        if resultFile != path {
+            optimiser.url = resultFile.url
+            optimiser.type = .from(filePath: resultFile)
+            if let newSize = resultFile.fileSize() {
+                optimiser.newBytes = newSize
+            }
+        }
+    } catch {
+        log.error("Pipeline: preset pipeline failed: \(error)")
+    }
+}
+
+/// If `pipeline` already contains an encoding step (optimise, downscale,
+/// lowerBitrate, convert, crop, extractPagesAsImages), skip the implicit
+/// pre-optimise and run the pipeline directly on `path`. Returns true when
+/// the short-circuit was applied so callers should skip their normal
+/// `optimiseItem` flow. Otherwise the underlying tools (ffmpeg, pngquant,
+/// ghostscript, vips) would run twice: once for the default optimise pass
+/// and again for the pipeline's own processing step. For audio this is an
+/// audible quality regression; for video a silent quality loss; for images
+/// and PDFs wasted CPU.
+@MainActor
+private func skipOptimiseAndRunPipelineIfEncoding(
+    _ pipeline: Pipeline?,
+    path: FilePath,
+    id: String? = nil,
+    source: OptimisationSource?,
+    prepare: @MainActor (Optimiser) async -> Void = { _ in }
+) async -> Bool {
+    guard let pipeline, !pipeline.isEmpty, let source,
+          pipeline.steps.contains(where: \.isProcessingStep)
+    else { return false }
+
+    let fileType: ClopFileType = path.isImage ? .image : path.isVideo ? .video : path.isPDF ? .pdf : .audio
+    let optimiser = OM.optimiser(
+        id: id ?? path.string,
+        type: ItemType.from(filePath: path),
+        operation: "Running pipeline",
+        hidden: false,
+        source: source
+    )
+    optimiser.url = path.url
+
+    // Preload audio metadata so the floating result UI can show bitrate
+    // immediately. Other types have their metadata populated by the
+    // pipeline functions themselves during the first processing step.
+    if fileType == .audio {
+        let audio = await (try? Audio.byFetchingMetadata(path: path, thumb: true)) ?? Audio(path: path, thumb: true)
+        optimiser.audio = audio
+    }
+
+    await prepare(optimiser)
+
+    do {
+        let (resultFile, _) = try await executePipeline(
+            pipeline, file: path, source: source, optimiser: optimiser, fileType: fileType
+        )
+        if resultFile != path {
+            optimiser.url = resultFile.url
+            optimiser.type = .from(filePath: resultFile)
+            if let newSize = resultFile.fileSize() {
+                optimiser.newBytes = newSize
+            }
+        }
+    } catch {
+        log.error("Pipeline: preset pipeline failed: \(error)")
+    }
+    return true
+}
+
 @MainActor
 func optimiseDroppedItems(_ itemProviders: [NSItemProvider], copy: Bool, preset: PresetZone? = nil, thumbnails: [NSItemProvider] = [], filenames: [NSItemProvider] = []) -> Bool {
     DM.dragging = false
@@ -501,8 +656,9 @@ func optimiseDroppedItems(_ itemProviders: [NSItemProvider], copy: Bool, preset:
     var filenames = filenames
 
     let aggressive = NSEvent.modifierFlags.contains(.command) ? true : nil
+    let pipeline = preset?.resolvedPipeline
     let hasItemsToOptimise = itemProviders.contains { provider in
-        (IMAGE_FORMATS + VIDEO_FORMATS).contains { provider.hasItemConformingToTypeIdentifier($0.identifier) }
+        (IMAGE_FORMATS + VIDEO_FORMATS + AUDIO_FORMATS).contains { provider.hasItemConformingToTypeIdentifier($0.identifier) }
     } || DM.itemsToOptimise.isNotEmpty
 
     var output: String? = nil
@@ -525,14 +681,14 @@ func optimiseDroppedItems(_ itemProviders: [NSItemProvider], copy: Bool, preset:
                     guard let item = try? await itemProvider.loadItem(forTypeIdentifier: identifier) else {
                         return
                     }
-                    try await optimiseFile(from: item, identifier: identifier, aggressive: aggressive, source: .dropZone, output: output, shortcut: preset?.shortcut)
+                    try await optimiseFile(from: item, identifier: identifier, aggressive: aggressive, source: .dropZone, output: output, pipeline: preset?.resolvedPipeline)
                 }
             case UTType.pdf.identifier:
                 tryAsync {
                     guard let item = try? await itemProvider.loadItem(forTypeIdentifier: identifier) else {
                         return
                     }
-                    try await optimiseFile(from: item, identifier: identifier, aggressive: aggressive, source: .dropZone, output: output, shortcut: preset?.shortcut)
+                    try await optimiseFile(from: item, identifier: identifier, aggressive: aggressive, source: .dropZone, output: output, pipeline: preset?.resolvedPipeline)
                 }
             case IMAGE_FORMATS.map(\.identifier):
                 tryAsync {
@@ -542,7 +698,27 @@ func optimiseDroppedItems(_ itemProviders: [NSItemProvider], copy: Bool, preset:
                     let nsImage = item as? NSImage ?? (data != nil ? NSImage(data: data!) : nil)
 
                     if path == nil, data == nil, nsImage == nil, itemProvidersCount == 1, let item = itemsToOptimise.first, item != .file(FilePath.tmp) {
-                        try await optimiseItem(item, id: item.id, aggressiveOptimisation: aggressive, optimisationCount: &DM.optimisationCount, copyToClipboard: copyToClipboard, source: .dropZone, output: output, shortcut: preset?.shortcut)
+                        if case let .image(img) = item,
+                           await skipOptimiseAndRunPipelineIfEncoding(pipeline, path: img.path, id: item.id, source: .dropZone, prepare: { $0.image = img })
+                        {
+                            return
+                        }
+                        if case let .file(filePath) = item,
+                           await skipOptimiseAndRunPipelineIfEncoding(pipeline, path: filePath, id: item.id, source: .dropZone)
+                        {
+                            return
+                        }
+                        let result = try await optimiseItem(
+                            item,
+                            id: item.id,
+                            aggressiveOptimisation: pipeline?.skipOptimisation == true ? false : aggressive,
+                            optimisationCount: &DM.optimisationCount,
+                            copyToClipboard: copyToClipboard,
+                            source: .dropZone,
+                            output: output,
+                            skipPipelineLookup: pipeline != nil
+                        )
+                        await runPresetPipeline(pipeline, result: result, id: item.id)
                         return
                     }
 
@@ -553,16 +729,21 @@ func optimiseDroppedItems(_ itemProviders: [NSItemProvider], copy: Bool, preset:
                         return
                     }
 
-                    try await optimiseItem(
+                    if await skipOptimiseAndRunPipelineIfEncoding(pipeline, path: image.path, source: .dropZone, prepare: { $0.image = image }) {
+                        return
+                    }
+
+                    let result = try await optimiseItem(
                         .image(image),
                         id: image.path.string,
-                        aggressiveOptimisation: aggressive,
+                        aggressiveOptimisation: pipeline?.skipOptimisation == true ? false : aggressive,
                         optimisationCount: &DM.optimisationCount,
                         copyToClipboard: copyToClipboard,
                         source: .dropZone,
                         output: output,
-                        shortcut: preset?.shortcut
+                        skipPipelineLookup: pipeline != nil
                     )
+                    await runPresetPipeline(pipeline, result: result, id: image.path.string)
                 }
             case VIDEO_FORMATS.map(\.identifier):
                 tryAsync {
@@ -593,65 +774,119 @@ func optimiseDroppedItems(_ itemProviders: [NSItemProvider], copy: Bool, preset:
                     guard let item = try? await itemProvider.loadItem(forTypeIdentifier: identifier) else {
                         optimiser.remove(after: 0)
                         if itemProvidersCount == 1, let item = itemsToOptimise.first, item != .file(FilePath.tmp) {
-                            try await optimiseItem(
+                            if case let .file(filePath) = item,
+                               await skipOptimiseAndRunPipelineIfEncoding(pipeline, path: filePath, id: item.id, source: .dropZone)
+                            {
+                                return
+                            }
+                            let result = try await optimiseItem(
                                 item,
                                 id: item.id,
-                                aggressiveOptimisation: aggressive,
+                                aggressiveOptimisation: pipeline?.skipOptimisation == true ? false : aggressive,
                                 optimisationCount: &DM.optimisationCount,
                                 copyToClipboard: copyToClipboard,
                                 source: .dropZone,
                                 output: output,
-                                shortcut: preset?.shortcut
+                                skipPipelineLookup: pipeline != nil
                             )
+                            await runPresetPipeline(pipeline, result: result, id: item.id)
                         }
                         return
                     }
                     optimiser.remove(after: 0)
-                    try await optimiseFile(from: item, identifier: identifier, aggressive: aggressive, source: .dropZone, output: output, shortcut: preset?.shortcut)
+                    try await optimiseFile(from: item, identifier: identifier, aggressive: aggressive, source: .dropZone, output: output, pipeline: preset?.resolvedPipeline)
+                }
+            case AUDIO_FORMATS.map(\.identifier):
+                tryAsync {
+                    let audioType = itemProvider.registeredContentTypes.first(where: { AUDIO_FORMATS.contains($0) }) ?? .mp3
+                    let optimiser = OM.optimiser(id: itemProvider.description, type: .audio(audioType), operation: "Loading", hidden: !Defaults[.enableFloatingResults], source: .dropZone)
+                    if filenames.isNotEmpty {
+                        let filenameProvider = filenames.removeFirst()
+                        var filename = try? await filenameProvider.loadItem(forTypeIdentifier: UTType.fileURL.identifier)
+                        if filename == nil {
+                            filename = try? await filenameProvider.loadItem(forTypeIdentifier: UTType.url.identifier)
+                        }
+                        if let url = filename as? URL {
+                            optimiser.url = url
+                        } else if let str = filename as? String, let url = URL(string: str) {
+                            optimiser.url = url
+                        }
+                    }
+
+                    guard let item = try? await itemProvider.loadItem(forTypeIdentifier: identifier) else {
+                        optimiser.remove(after: 0)
+                        if itemProvidersCount == 1, let item = itemsToOptimise.first, item != .file(FilePath.tmp) {
+                            if case let .file(filePath) = item,
+                               await skipOptimiseAndRunPipelineIfEncoding(pipeline, path: filePath, id: item.id, source: .dropZone)
+                            {
+                                return
+                            }
+                            let result = try await optimiseItem(
+                                item,
+                                id: item.id,
+                                aggressiveOptimisation: pipeline?.skipOptimisation == true ? false : aggressive,
+                                optimisationCount: &DM.optimisationCount,
+                                copyToClipboard: copyToClipboard,
+                                source: .dropZone,
+                                output: output,
+                                skipPipelineLookup: pipeline != nil
+                            )
+                            await runPresetPipeline(pipeline, result: result, id: item.id)
+                        }
+                        return
+                    }
+                    optimiser.remove(after: 0)
+                    try await optimiseFile(from: item, identifier: identifier, aggressive: aggressive, source: .dropZone, output: output, pipeline: preset?.resolvedPipeline)
                 }
             case [UTType.plainText.identifier, UTType.utf8PlainText.identifier]:
                 tryAsync {
                     let item = try? await itemProvider.loadItem(forTypeIdentifier: identifier)
-                    if let path = item?.existingFilePath, path.isImage || path.isVideo {
-                        try await optimiseItem(
+                    if let path = item?.existingFilePath, path.isImage || path.isVideo || path.isAudio {
+                        if await skipOptimiseAndRunPipelineIfEncoding(pipeline, path: path, source: .dropZone) {
+                            return
+                        }
+                        let result = try await optimiseItem(
                             .file(path),
                             id: path.string,
-                            aggressiveOptimisation: aggressive,
+                            aggressiveOptimisation: pipeline?.skipOptimisation == true ? false : aggressive,
                             optimisationCount: &DM.optimisationCount,
                             copyToClipboard: copyToClipboard,
                             source: .dropZone,
                             output: output,
-                            shortcut: preset?.shortcut
+                            skipPipelineLookup: pipeline != nil
                         )
+                        await runPresetPipeline(pipeline, result: result, id: path.string)
                     }
-                    if let url = item?.url, url.isImage || url.isVideo {
-                        try await optimiseItem(
+                    if let url = item?.url, url.isImage || url.isVideo || url.isAudio {
+                        let result = try await optimiseItem(
                             .url(url),
                             id: url.absoluteString,
-                            aggressiveOptimisation: aggressive,
+                            aggressiveOptimisation: pipeline?.skipOptimisation == true ? false : aggressive,
                             optimisationCount: &DM.optimisationCount,
                             copyToClipboard: copyToClipboard,
                             source: .dropZone,
                             output: output,
-                            shortcut: preset?.shortcut
+                            skipPipelineLookup: pipeline != nil
                         )
+                        await runPresetPipeline(pipeline, result: result, id: url.absoluteString)
                     }
                 }
             case UTType.url.identifier:
                 tryAsync {
-                    guard let url = try await itemProvider.loadItem(forTypeIdentifier: identifier) as? URL, url.isImage || url.isVideo else {
+                    guard let url = try await itemProvider.loadItem(forTypeIdentifier: identifier) as? URL, url.isImage || url.isVideo || url.isAudio else {
                         return
                     }
-                    try await optimiseItem(
+                    let result = try await optimiseItem(
                         .url(url),
                         id: url.absoluteString,
-                        aggressiveOptimisation: aggressive,
+                        aggressiveOptimisation: pipeline?.skipOptimisation == true ? false : aggressive,
                         optimisationCount: &DM.optimisationCount,
                         copyToClipboard: copyToClipboard,
                         source: .dropZone,
                         output: output,
-                        shortcut: preset?.shortcut
+                        skipPipelineLookup: pipeline != nil
                     )
+                    await runPresetPipeline(pipeline, result: result, id: url.absoluteString)
                 }
             default:
                 break
@@ -673,13 +908,13 @@ extension NSSecureCoding {
 }
 
 @MainActor
-func optimiseDir(path dir: FilePath, aggressive: Bool? = nil, source: OptimisationSource? = nil, output: String? = nil, types: [UTType], shortcut: Shortcut? = nil) async throws {
+func optimiseDir(path dir: FilePath, aggressive: Bool? = nil, source: OptimisationSource? = nil, output: String? = nil, types: [UTType]) async throws {
     await withThrowingTaskGroup(of: Void.self, returning: Void.self) { group in
         for url in getURLsFromFolder(dir.url, recursive: true, types: types) {
             let path = url.filePath!
             let added = group.addTaskUnlessCancelled {
                 _ = try await proGuard(count: &DM.optimisationCount, limit: 5, url: path.url) {
-                    try await optimiseItem(.file(path), id: path.string, aggressiveOptimisation: aggressive, optimisationCount: &manualOptimisationCount, copyToClipboard: false, source: source, output: output, shortcut: shortcut)
+                    try await optimiseItem(.file(path), id: path.string, aggressiveOptimisation: aggressive, optimisationCount: &manualOptimisationCount, copyToClipboard: false, source: source, output: output)
                 }
             }
             guard added else { break }
@@ -688,26 +923,50 @@ func optimiseDir(path dir: FilePath, aggressive: Bool? = nil, source: Optimisati
 }
 
 @MainActor
-func optimiseFile(from item: NSSecureCoding?, identifier: String, aggressive: Bool? = nil, source: OptimisationSource? = nil, output: String? = nil, shortcut: Shortcut? = nil) async throws {
-    guard let path = item?.existingFilePath, path.isImage || path.isVideo || path.isPDF || path.isDir else {
+func optimiseFile(from item: NSSecureCoding?, identifier: String, aggressive: Bool? = nil, source: OptimisationSource? = nil, output: String? = nil, pipeline: Pipeline? = nil) async throws {
+    guard let path = item?.existingFilePath, path.isImage || path.isVideo || path.isAudio || path.isPDF || path.isDir else {
         return
     }
 
     guard !path.isDir else {
-        try await optimiseDir(path: path, aggressive: aggressive, source: source, output: output, types: ALL_FORMATS, shortcut: shortcut)
+        try await optimiseDir(path: path, aggressive: aggressive, source: source, output: output, types: ALL_FORMATS)
         return
     }
-    _ = try await proGuard(count: &DM.optimisationCount, limit: 5, url: path.url) {
-        try await optimiseItem(
+    _ = try await proGuard(count: &DM.optimisationCount, limit: 5, url: path.url) { () async throws -> ClipboardType? in
+        if await skipOptimiseAndRunPipelineIfEncoding(pipeline, path: path, source: source) {
+            return nil
+        }
+
+        let skipOpt = pipeline?.skipOptimisation ?? false
+        let result = try await optimiseItem(
             .file(path),
             id: path.string,
-            aggressiveOptimisation: aggressive,
+            aggressiveOptimisation: skipOpt ? false : aggressive,
             optimisationCount: &manualOptimisationCount,
             copyToClipboard: Defaults[.autoCopyToClipboard],
             source: source,
             output: output,
-            shortcut: shortcut
+            skipPipelineLookup: pipeline != nil
         )
+
+        // Run preset pipeline if configured
+        if let pipeline, !pipeline.isEmpty, let source, let optimiser = opt(path.string) {
+            let resultPath = result?.path ?? path
+            let fileType: ClopFileType = path.isImage ? .image : path.isVideo ? .video : path.isPDF ? .pdf : .audio
+            do {
+                let (resultFile, _) = try await executePipeline(pipeline, file: resultPath, source: source, optimiser: optimiser, fileType: fileType)
+                if resultFile != resultPath {
+                    optimiser.url = resultFile.url
+                    optimiser.type = .from(filePath: resultFile)
+                    if let newSize = resultFile.fileSize() {
+                        optimiser.newBytes = newSize
+                    }
+                }
+            } catch {
+                log.error("Pipeline: preset pipeline failed: \(error)")
+            }
+        }
+        return result
     }
 }
 
@@ -717,7 +976,13 @@ struct DropZoneView_Previews: PreviewProvider {
     static var previews: some View {
         DropZoneView()
             .padding()
-            .background(LinearGradient(colors: [Color.red, Color.orange, Color.blue], startPoint: .topLeading, endPoint: .bottomTrailing))
+            .background(LinearGradient(
+                colors: [Color.windowBackground, Color.textBackground, Color.tertiaryLabel],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            ))
+//            .background(LinearGradient(colors: [Color.red, Color.orange, Color.blue],
+//                                       startPoint: .topLeading, endPoint: .bottomTrailing))
 
     }
 }

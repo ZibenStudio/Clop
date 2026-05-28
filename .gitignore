@@ -5,7 +5,10 @@ Clop/bin.zip
 *.delta
 *.bkp
 Releases/*.html
-required.swift
 Releases/old_updates/
 *.tmp
 build/
+
+# Xcode personal IDE state
+xcuserdata/
+.DS_Store

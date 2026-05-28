@@ -1,5 +1,5 @@
 {
-  "originHash" : "1a99977d939e4d6ca17e3a8c1ff472042797d425e6a9af61084a9bd4d6fe3335",
+  "originHash" : "922b221f203e473817d8db5f03cc1750d4ff7cf4e7d239074c57b5df28ab3f23",
   "pins" : [
     {
       "identity" : "appreceiptvalidator",
@@ -38,6 +38,15 @@
       }
     },
     {
+      "identity" : "jxl-coder-swift",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/awxkee/jxl-coder-swift",
+      "state" : {
+        "revision" : "617f566af9c0529d1c3e557fe667ff9b47b68d90",
+        "version" : "1.9.1"
+      }
+    },
+    {
       "identity" : "launchatlogin-modern",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/sindresorhus/LaunchAtLogin-Modern",
@@ -52,7 +61,7 @@
       "location" : "https://github.com/FuzzyIdeas/Lowtech",
       "state" : {
         "branch" : "ventura",
-        "revision" : "faa6f0b3192eec93ce3130b1a59578df9ec6cc78"
+        "revision" : "6913eef15b98f62d4507ebe4e519a7a8a19b4185"
       }
     },
     {
@@ -87,8 +96,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/getsentry/sentry-cocoa",
       "state" : {
-        "revision" : "f1eefffd88cd6dfe5751159a3b32ff3c8e5b3b32",
-        "version" : "9.4.0"
+        "revision" : "d459ff99b1912c9603c9e607e030b4b98e2e199a",
+        "version" : "9.9.0"
       }
     },
     {
@@ -96,8 +105,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/sparkle-project/Sparkle",
       "state" : {
-        "revision" : "5581748cef2bae787496fe6d61139aebe0a451f6",
-        "version" : "2.8.1"
+        "revision" : "066e75a8b3e99962685d6a90cdd5293ebffd9261",
+        "version" : "2.9.1"
       }
     },
     {
@@ -105,8 +114,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-argument-parser.git",
       "state" : {
-        "revision" : "c5d11a805e765f52ba34ec7284bd4fcd6ba68615",
-        "version" : "1.7.0"
+        "revision" : "626b5b7b2f45e1b0b1c6f4a309296d1d21d7311b",
+        "version" : "1.7.1"
       }
     },
     {
@@ -132,8 +141,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/alin23/swift-ignore",
       "state" : {
-        "revision" : "4fea2479f50c968fad64092b6d2a9b4312f1b353",
-        "version" : "0.1.3"
+        "revision" : "4fc142964621eda7835a4524e567388f5ef6f1a0",
+        "version" : "0.1.4"
       }
     },
     {

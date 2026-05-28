@@ -2,50 +2,70 @@ import Cocoa
 import Defaults
 import Foundation
 import Lowtech
+import os
 import PDFKit
 import System
 import UniformTypeIdentifiers
 
+private let log = Logger(subsystem: LOG_SUBSYSTEM, category: "PDF")
+
 var GS = BIN_DIR.appendingPathComponent("gs").filePath!
 
-let GS_LOSSY_ARGS: [String] = [
-    "-dAutoFilterGrayImages=false",
-    "-dAutoFilterColorImages=false",
-    "-dAutoFilterMonoImages=true",
-    "-dColorImageFilter=/DCTEncode",
-    "-dDownsampleColorImages=true",
-    "-dDownsampleGrayImages=true",
-    "-dDownsampleMonoImages=true",
-    "-dGrayImageFilter=/DCTEncode",
-    "-dPassThroughJPEGImages=false",
-    "-dPassThroughJPXImages=false",
-    "-dShowAcroForm=false",
-]
-let GS_LOSSLESS_ARGS: [String] = [
-    "-dAutoFilterGrayImages=false",
-    "-dAutoFilterColorImages=false",
-    "-dAutoFilterMonoImages=false",
-    "-dColorImageFilter=/DCTEncode",
-    "-dDownsampleColorImages=false",
-    "-dDownsampleGrayImages=false",
-    "-dDownsampleMonoImages=false",
-    "-dGrayImageFilter=/DCTEncode",
-    "-dPassThroughJPEGImages=true",
-    "-dPassThroughJPXImages=true",
-    "-dShowAcroForm=true",
-]
+func gsLossyArgs(downsample: Bool) -> [String] {
+    [
+        "-dAutoFilterColorImages=false",
+        "-dAutoFilterGrayImages=false",
+        "-dAutoFilterMonoImages=true",
+        "-dColorImageFilter=/DCTEncode",
+        "-dDownsampleColorImages=\(downsample)",
+        "-dDownsampleGrayImages=\(downsample)",
+        "-dDownsampleMonoImages=\(downsample)",
+        "-dGrayImageFilter=/DCTEncode",
+        "-dPassThroughJPEGImages=false",
+        "-dPassThroughJPXImages=false",
+        "-dShowAcroForm=false",
+    ]
+}
 
-let GS_ARGS: [String] = [
-    "-r150",
+func gsLosslessArgs(downsample: Bool) -> [String] {
+    [
+        "-dAutoFilterColorImages=false",
+        "-dAutoFilterGrayImages=false",
+        "-dAutoFilterMonoImages=false",
+        "-dColorImageFilter=/DCTEncode",
+        "-dDownsampleColorImages=\(downsample)",
+        "-dDownsampleGrayImages=\(downsample)",
+        "-dDownsampleMonoImages=\(downsample)",
+        "-dGrayImageFilter=/DCTEncode",
+        // PassThrough only works when not downsampling — preserves originals byte-for-byte.
+        "-dPassThroughJPEGImages=\(!downsample)",
+        "-dPassThroughJPXImages=\(!downsample)",
+        "-dShowAcroForm=true",
+    ]
+}
+
+func gsResolutionArgs(dpi: Int) -> [String] {
+    [
+        "-dColorImageDownsampleThreshold=1.0",
+        "-dColorImageDownsampleType=/Bicubic",
+        "-dColorImageResolution=\(dpi)",
+        "-dGrayImageDownsampleThreshold=1.0",
+        "-dGrayImageDownsampleType=/Bicubic",
+        "-dGrayImageResolution=\(dpi)",
+        "-dMonoImageDownsampleThreshold=1.0",
+        "-dMonoImageDownsampleType=/Bicubic",
+        // Mono (1-bit) images compress poorly below 300 dpi; clamp.
+        "-dMonoImageResolution=\(max(dpi, 300))",
+    ]
+}
+
+let GS_BASE_ARGS: [String] = [
     "-dALLOWPSTRANSPARENCY",
     "-dAutoRotatePages=/None",
     "-dBATCH",
     "-dCannotEmbedFontPolicy=/Warning",
-    "-dColorConversionStrategy=/LeaveColorUnchanged",
     "-dColorConversionStrategy=/sRGB",
-    "-dColorImageDownsampleThreshold=1.0",
-    "-dColorImageDownsampleType=/Bicubic",
-    "-dColorImageResolution=150",
+    "-dCompatibilityLevel=1.6",
     "-dCompressFonts=true",
     "-dCompressPages=true",
     "-dCompressStreams=true",
@@ -60,49 +80,36 @@ let GS_ARGS: [String] = [
     "-dEncodeMonoImages=true",
     "-dFastWebView=false",
     "-dGrayDetection=true",
-    "-dGrayImageDownsampleThreshold=1.0",
-    "-dGrayImageDownsampleType=/Bicubic",
-    "-dGrayImageResolution=150",
     "-dHaveTransparency=true",
     "-dLZWEncodePages=true",
     "-dMaxBitmap=0",
-    "-dMonoImageDownsampleThreshold=1.0",
-    "-dMonoImageDownsampleType=/Bicubic",
     "-dMonoImageFilter=/CCITTFaxEncode",
-    "-dMonoImageResolution=150",
     "-dNOPAUSE",
     "-dNOPROMPT",
-    "-dOptimize=false",
+    "-dOptimize=true",
     "-dParseDSCComments=false",
     "-dParseDSCCommentsForDocInfo=false",
     "-dPDFNOCIDFALLBACK",
-    "-dPDFNOCIDFALLBACK",
     "-dPDFSETTINGS=/screen",
-    // "-dPDFSTOPONERROR",
     "-dPreserveAnnots=true",
     "-dPreserveCopyPage=false",
-    "-dPreserveDeviceN=false",
     "-dPreserveDeviceN=true",
-    "-dPreserveEPSInfo=false",
     "-dPreserveEPSInfo=false",
     "-dPreserveHalftoneInfo=false",
     "-dPreserveOPIComments=false",
-    "-dPreserveOverprintSettings=false",
     "-dPreserveOverprintSettings=true",
-    "-dPreserveSeparation=false",
     "-dPreserveSeparation=true",
     "-dPrinted=false",
     "-dProcessColorModel=/DeviceRGB",
     "-dSAFER",
     "-dSubsetFonts=true",
     "-dTransferFunctionInfo=/Apply",
-    "-dTransferFunctionInfo=/Preserve",
     "-dUCRandBGInfo=/Remove",
 ]
 
 let GS_PRE_ARGS: [String] = [
     "-c",
-    "<< /ColorImageDict << /QFactor 0.76 /Blend 1 /HSamples [2 1 1 2] /VSamples [2 1 1 2] >> >> setdistillerparams << /ColorACSImageDict << /QFactor 0.76 /Blend 1 /HSamples [2 1 1 2] /VSamples [2 1 1 2] >> >> setdistillerparams << /GrayImageDict << /QFactor 0.76 /Blend 1 /HSamples [2 1 1 2] /VSamples [2 1 1 2] >> >> setdistillerparams << /GrayACSImageDict << /QFactor 0.76 /Blend 1 /HSamples [2 1 1 2] /VSamples [2 1 1 2] >> >> setdistillerparams << /AlwaysEmbed [ ] >> setdistillerparams << /NeverEmbed [/Courier /Courier-Bold /Courier-Oblique /Courier-BoldOblique /Helvetica /Helvetica-Bold /Helvetica-Oblique /Helvetica-BoldOblique /Times-Roman /Times-Bold /Times-Italic /Times-BoldItalic /Symbol /ZapfDingbats /Arial] >> setdistillerparams",
+    "<< /ColorImageDict << /QFactor 0.68 /Blend 1 /HSamples [2 1 1 2] /VSamples [2 1 1 2] >> >> setdistillerparams << /ColorACSImageDict << /QFactor 0.68 /Blend 1 /HSamples [2 1 1 2] /VSamples [2 1 1 2] >> >> setdistillerparams << /GrayImageDict << /QFactor 0.68 /Blend 1 /HSamples [2 1 1 2] /VSamples [2 1 1 2] >> >> setdistillerparams << /GrayACSImageDict << /QFactor 0.68 /Blend 1 /HSamples [2 1 1 2] /VSamples [2 1 1 2] >> >> setdistillerparams << /AlwaysEmbed [ ] >> setdistillerparams << /NeverEmbed [/Courier /Courier-Bold /Courier-Oblique /Courier-BoldOblique /Helvetica /Helvetica-Bold /Helvetica-Oblique /Helvetica-BoldOblique /Times-Roman /Times-Bold /Times-Italic /Times-BoldItalic /Symbol /ZapfDingbats /Arial] >> setdistillerparams",
     "-f",
     "-c",
     "/originalpdfmark { //pdfmark } bind def /pdfmark { { { counttomark pop } stopped { /pdfmark errordict /unmatchedmark get exec stop } if dup type /nametype ne { /pdfmark errordict /typecheck get exec stop } if dup /DOCINFO eq { (Skipping DOCINFO pdfmark\n) print cleartomark exit } if originalpdfmark exit } loop } def",
@@ -113,10 +120,151 @@ let GS_POST_ARGS: [String] = [
     "-c", "[ /Producer () /ModDate () /CreationDate () /DOCINFO pdfmark", "-f",
 ]
 
-func gsArgs(_ input: String, _ output: String, lossy: Bool) -> [String] {
-    let optArgs: [String] = (lossy ? GS_LOSSY_ARGS : GS_LOSSLESS_ARGS)
+func gsArgs(_ input: String, _ output: String, lossy: Bool, dpi: Int) -> [String] {
+    let clampedDPI = min(max(dpi, PDF_DPI_MIN), PDF_DPI_MAX)
+    let downsample = clampedDPI < PDF_DPI_NO_DOWNSAMPLE
+    let optArgs: [String] = lossy ? gsLossyArgs(downsample: downsample) : gsLosslessArgs(downsample: downsample)
+    let resArgs: [String] = gsResolutionArgs(dpi: clampedDPI)
     let outArgs: [String] = ["-sDEVICE=pdfwrite", "-sFONTPATH=\(FONT_PATH)", "-o", output]
-    return GS_ARGS + optArgs + outArgs + GS_PRE_ARGS + [input] + GS_POST_ARGS
+    return GS_BASE_ARGS + resArgs + optArgs + outArgs + GS_PRE_ARGS + [input] + GS_POST_ARGS
+}
+
+private struct PDFImageDimensions {
+    let widthPx: Int
+    let heightPx: Int
+    let pageWidthIn: Double
+    let pageHeightIn: Double
+
+    var dpi: Double {
+        let wDPI = Double(widthPx) / pageWidthIn
+        let hDPI = Double(heightPx) / pageHeightIn
+        return (wDPI + hDPI) / 2
+    }
+}
+
+private final class PDFImageDimensionsCollector {
+    var images: [PDFImageDimensions] = []
+    var pageWidthIn: Double = 0
+    var pageHeightIn: Double = 0
+}
+
+private func collectPDFImageDimensions(at path: FilePath) -> [PDFImageDimensions] {
+    guard let doc = CGPDFDocument(path.url as CFURL), doc.numberOfPages > 0 else { return [] }
+
+    let collector = PDFImageDimensionsCollector()
+    for pageNum in 1 ... doc.numberOfPages {
+        guard let page = doc.page(at: pageNum) else { continue }
+        let mediaBox = page.getBoxRect(.mediaBox)
+        guard mediaBox.width > 0, mediaBox.height > 0 else { continue }
+        collector.pageWidthIn = Double(mediaBox.width) / 72.0
+        collector.pageHeightIn = Double(mediaBox.height) / 72.0
+
+        guard let pageDict = page.dictionary else { continue }
+        var resourcesDict: CGPDFDictionaryRef?
+        guard CGPDFDictionaryGetDictionary(pageDict, "Resources", &resourcesDict),
+              let resourcesDict
+        else { continue }
+
+        var xobjectDict: CGPDFDictionaryRef?
+        guard CGPDFDictionaryGetDictionary(resourcesDict, "XObject", &xobjectDict),
+              let xobjectDict
+        else { continue }
+
+        CGPDFDictionaryApplyBlock(xobjectDict, { _, object, _ in
+            var stream: CGPDFStreamRef?
+            guard CGPDFObjectGetValue(object, .stream, &stream),
+                  let stream,
+                  let streamDict = CGPDFStreamGetDictionary(stream)
+            else { return true }
+
+            var subtypeName: UnsafePointer<CChar>?
+            guard CGPDFDictionaryGetName(streamDict, "Subtype", &subtypeName),
+                  let subtypeName,
+                  String(cString: subtypeName) == "Image"
+            else { return true }
+
+            var widthInt: CGPDFInteger = 0
+            var heightInt: CGPDFInteger = 0
+            guard CGPDFDictionaryGetInteger(streamDict, "Width", &widthInt),
+                  CGPDFDictionaryGetInteger(streamDict, "Height", &heightInt)
+            else { return true }
+
+            collector.images.append(PDFImageDimensions(
+                widthPx: Int(widthInt),
+                heightPx: Int(heightInt),
+                pageWidthIn: collector.pageWidthIn,
+                pageHeightIn: collector.pageHeightIn
+            ))
+            return true
+        }, nil)
+    }
+
+    return collector.images
+}
+
+/// Lower Tukey fence — drops abnormally low DPI values that come from small
+/// partial-page images mis-counted as low-DPI by the full-page heuristic.
+private func dropLowDPIOutliers(_ values: [Double]) -> [Double] {
+    guard values.count >= 4 else { return values }
+    let sorted = values.sorted()
+    func percentile(_ p: Double) -> Double {
+        let idx = max(0, min(Double(sorted.count - 1), Double(sorted.count - 1) * p))
+        let lo = Int(idx.rounded(.down))
+        let hi = Int(idx.rounded(.up))
+        let frac = idx - Double(lo)
+        return sorted[lo] * (1 - frac) + sorted[hi] * frac
+    }
+    let q1 = percentile(0.25)
+    let q3 = percentile(0.75)
+    let lo = q1 - 1.5 * (q3 - q1)
+    return values.filter { $0 >= lo }
+}
+
+private let MIN_IMAGES_AT_DPI_STOP = 3
+
+struct PDFDPIAnalysis {
+    let chosen: Int
+    let maxSourceDPI: Int?
+}
+
+/// Scan a PDF for image XObjects and return the highest filtered DPI, or nil
+/// when the PDF has no countable images. Used to populate the source DPI label
+/// when the user has chosen a fixed aggressive DPI (no adaptive choice needed).
+func scanPDFMaxImageDPI(at path: FilePath) -> Int? {
+    let images = collectPDFImageDimensions(at: path)
+    guard !images.isEmpty else { return nil }
+    let dpis = dropLowDPIOutliers(images.map(\.dpi))
+    guard !dpis.isEmpty else { return nil }
+    return Int((dpis.max() ?? 0).rounded())
+}
+
+/// Pick the highest stop ≤ `cap` where the cumulative count of images at-or-above
+/// that stop exceeds `MIN_IMAGES_AT_DPI_STOP`. Returns `cap` when the PDF has no
+/// images or no stop qualifies — preserves the existing user setting in those cases.
+/// Also reports the max image DPI in the source (after low-outlier filtering).
+func analyseAggressivePDFDPI(at path: FilePath, cap: Int) -> PDFDPIAnalysis {
+    let images = collectPDFImageDimensions(at: path)
+    guard !images.isEmpty else { return PDFDPIAnalysis(chosen: cap, maxSourceDPI: nil) }
+
+    let dpis = dropLowDPIOutliers(images.map(\.dpi))
+    guard !dpis.isEmpty else { return PDFDPIAnalysis(chosen: cap, maxSourceDPI: nil) }
+
+    let maxSourceDPI = Int((dpis.max() ?? 0).rounded())
+    let stops = PDF_DPI_STOPS.filter { $0 <= cap }
+    var freq: [Int: Int] = [:]
+    for dpi in dpis {
+        guard let bucket = stops.first(where: { Double($0) <= dpi }) else { continue }
+        freq[bucket, default: 0] += 1
+    }
+
+    var imagesAtOrAboveStop = 0
+    for stop in stops {
+        imagesAtOrAboveStop += freq[stop] ?? 0
+        if imagesAtOrAboveStop > MIN_IMAGES_AT_DPI_STOP {
+            return PDFDPIAnalysis(chosen: stop, maxSourceDPI: maxSourceDPI)
+        }
+    }
+    return PDFDPIAnalysis(chosen: cap, maxSourceDPI: maxSourceDPI)
 }
 
 let FONT_PATH: String = [
@@ -184,6 +332,8 @@ class PDF: Optimisable {
     lazy var size: NSSize? = document?.page(at: 1)?.bounds(for: .cropBox).size
     lazy var originalSize: NSSize? = document?.page(at: 1)?.bounds(for: .mediaBox).size
 
+    var pageCount: Int { document?.pageCount ?? 0 }
+
     @discardableResult
     func uncrop(saveTo newPath: FilePath? = nil) -> Bool {
         guard let document, !document.isEncrypted else {
@@ -203,12 +353,16 @@ class PDF: Optimisable {
         return document.write(to: newPath?.url ?? path.url)
     }
 
-    func optimise(optimiser: Optimiser, aggressiveOptimisation: Bool? = nil) throws -> PDF {
+    func optimise(optimiser: Optimiser, aggressiveOptimisation: Bool? = nil, dpi: Int? = nil) throws -> PDF {
         guard let document else {
             throw ClopError.invalidPDF(path)
         }
         guard !document.isEncrypted else {
             throw ClopError.encryptedPDF(path)
+        }
+
+        if document.pageCount > PARALLEL_PDF_PAGE_THRESHOLD {
+            return try optimiseInParallel(optimiser: optimiser, aggressiveOptimisation: aggressiveOptimisation, dpi: dpi)
         }
 
         try? path.setOptimisationStatusXattr("pending")
@@ -217,7 +371,49 @@ class PDF: Optimisable {
         let aggressiveOptimisation = aggressiveOptimisation ?? Defaults[.useAggressiveOptimisationPDF]
         mainActor { optimiser.aggressive = aggressiveOptimisation }
 
-        let args = gsArgs(path.string, tempFile.string, lossy: aggressiveOptimisation)
+        // Always run gs from the original (backed up on first optimisation) so
+        // re-optimisations don't double-encode and the user can step the DPI
+        // back up after stepping it down.
+        let backupPath = path.clopBackupPath
+        if let bp = backupPath, !bp.exists {
+            path.backup(path: bp, operation: .copy)
+        }
+        let inputPath: FilePath = (backupPath?.exists ?? false) ? backupPath! : path
+
+        let resolvedSetting: Int = if let dpi {
+            dpi
+        } else if aggressiveOptimisation {
+            Defaults[.pdfDPIAggressive]
+        } else {
+            Defaults[.pdfDPI]
+        }
+
+        let effectiveDPI: Int
+        var sourceMaxDPI: Int?
+        if resolvedSetting == PDF_DPI_ADAPTIVE {
+            let analysis = analyseAggressivePDFDPI(at: inputPath, cap: PDF_DPI_NO_DOWNSAMPLE)
+            effectiveDPI = analysis.chosen
+            sourceMaxDPI = analysis.maxSourceDPI
+            if let sourceMax = analysis.maxSourceDPI {
+                log.debug("Adaptive PDF DPI for \(inputPath.string): chose \(analysis.chosen) (source max \(sourceMax))")
+            }
+        } else {
+            effectiveDPI = resolvedSetting
+            if aggressiveOptimisation || dpi != nil {
+                sourceMaxDPI = scanPDFMaxImageDPI(at: inputPath)
+            }
+        }
+
+        if let sourceMaxDPI {
+            mainActor {
+                if optimiser.oldDPI == nil {
+                    optimiser.oldDPI = sourceMaxDPI
+                }
+                let baseDPI = optimiser.oldDPI ?? sourceMaxDPI
+                optimiser.newDPI = min(baseDPI, effectiveDPI)
+            }
+        }
+        let args = gsArgs(inputPath.string, tempFile.string, lossy: aggressiveOptimisation, dpi: effectiveDPI)
         let proc = try tryProc(GS.string, args: args, tries: 3, captureOutput: true, env: GHOSTSCRIPT_ENV) { proc in
             mainActor { [weak self] in
                 guard let self else { return }
@@ -228,7 +424,6 @@ class PDF: Optimisable {
         guard proc.terminationStatus == 0 else {
             throw ClopProcError.processError(proc)
         }
-        path.backup(path: path.clopBackupPath, operation: .copy)
 
         tempFile.waitForFile(for: 2)
         try? tempFile.setOptimisationStatusXattr("true")
@@ -240,6 +435,33 @@ class PDF: Optimisable {
         }
 
         return PDF(path)
+    }
+
+    func renderPage(pageIndex: Int, format: NSBitmapImageRep.FileType = .jpeg, scale: CGFloat = 2.0) -> Data? {
+        guard let page = document?.page(at: pageIndex) else { return nil }
+        let bounds = page.bounds(for: .cropBox)
+        let scaledSize = CGSize(width: bounds.width * scale, height: bounds.height * scale)
+
+        let image = NSImage(size: scaledSize)
+        image.lockFocus()
+        guard let ctx = NSGraphicsContext.current?.cgContext else {
+            image.unlockFocus()
+            return nil
+        }
+        if format == .jpeg {
+            ctx.setFillColor(NSColor.white.cgColor)
+            ctx.fill(CGRect(origin: .zero, size: scaledSize))
+        }
+        ctx.scaleBy(x: scale, y: scale)
+        page.draw(with: .cropBox, to: ctx)
+        image.unlockFocus()
+
+        guard let tiff = image.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiff)
+        else { return nil }
+
+        let properties: [NSBitmapImageRep.PropertyKey: Any] = format == .jpeg ? [.compressionFactor: 0.9] : [:]
+        return bitmap.representation(using: format, properties: properties)
     }
 }
 
@@ -280,118 +502,214 @@ class PDF: Optimisable {
 
 let GHOSTSCRIPT_ENV = ["GS_LIB": BIN_DIR.appending(path: "share/ghostscript/10.06.0/Resource/Init").path]
 
-@discardableResult
-@MainActor func optimisePDF(
-    _ pdf: PDF,
-    copyToClipboard: Bool = false,
-    id: String? = nil,
-    debounceMS: Int = 0,
-    allowLarger: Bool = false,
-    hideFloatingResult: Bool = false,
-    cropTo cropSize: CropSize? = nil,
-    aggressiveOptimisation: Bool? = nil,
-    source: OptimisationSource? = nil,
-    shortcut: Shortcut? = nil
-) async throws -> PDF? {
-    let path = pdf.path
-    let pathString = path.string
-    let optimiser = OM.optimiser(id: id ?? pathString, type: .pdf, operation: debounceMS > 0 ? "Waiting for PDF to be ready" : "Optimising", hidden: hideFloatingResult, source: source)
+// MARK: - Parallel PDF optimisation
 
-    var done = false
-    var result: PDF?
+private let PARALLEL_PDF_PAGE_THRESHOLD = 150
+private let PARALLEL_PDF_CHUNK_SIZE = 100
+private let PARALLEL_PDF_CONCURRENCY = 4
 
-    pdfOptimiseDebouncers[pathString]?.cancel()
-    let workItem = mainAsyncAfter(ms: debounceMS) {
-        optimiser.operation = (Defaults[.showImages] ? "Optimising" : "Optimising \(optimiser.filename)") + (aggressiveOptimisation ?? false ? " (aggressive)" : "")
-        optimiser.originalURL = path.url
-        OM.optimisers = OM.optimisers.without(optimiser).with(optimiser)
-        showFloatingThumbnails()
+private final class ParallelGSProgress: @unchecked Sendable {
+    init(optimiser: Optimiser, totalPages: Int) {
+        self.optimiser = optimiser
+        self.totalPages = totalPages
+    }
 
-        let fileSize = pdf.fileSize
-        var previouslyCached = true
+    weak var optimiser: Optimiser?
+    let totalPages: Int
 
-        pdfOptimisationQueue.addOperation {
-            var optimisedPDF: PDF?
-            defer {
-                mainActor {
-                    pdfOptimiseDebouncers.removeValue(forKey: pathString)
-                    done = true
-                }
+    func increment(by n: Int) {
+        lock.lock()
+        completed += n
+        let current = completed
+        lock.unlock()
+        let total = totalPages
+        mainActor { [weak self] in
+            guard let opt = self?.optimiser else { return }
+            opt.progress.completedUnitCount = min(Int64(current), Int64(total))
+            opt.progress.localizedAdditionalDescription = "Page \(current) of \(total)"
+        }
+    }
+
+    private let lock = NSLock()
+    private var completed = 0
+
+}
+
+extension PDF {
+    func optimiseInParallel(optimiser: Optimiser, aggressiveOptimisation: Bool? = nil, dpi: Int? = nil) throws -> PDF {
+        guard let document else {
+            throw ClopError.invalidPDF(path)
+        }
+        guard !document.isEncrypted else {
+            throw ClopError.encryptedPDF(path)
+        }
+
+        try? path.setOptimisationStatusXattr("pending")
+        let tempFile = FilePath.pdfs.appending(path.lastComponent?.string ?? "clop.pdf")
+
+        let aggressive = aggressiveOptimisation ?? Defaults[.useAggressiveOptimisationPDF]
+        mainActor { optimiser.aggressive = aggressive }
+
+        let backupPath = path.clopBackupPath
+        if let bp = backupPath, !bp.exists {
+            path.backup(path: bp, operation: .copy)
+        }
+        let inputPath: FilePath = (backupPath?.exists ?? false) ? backupPath! : path
+
+        let resolvedSetting: Int = if let dpi {
+            dpi
+        } else if aggressive {
+            Defaults[.pdfDPIAggressive]
+        } else {
+            Defaults[.pdfDPI]
+        }
+
+        let effectiveDPI: Int
+        var sourceMaxDPI: Int?
+        if resolvedSetting == PDF_DPI_ADAPTIVE {
+            let analysis = analyseAggressivePDFDPI(at: inputPath, cap: PDF_DPI_NO_DOWNSAMPLE)
+            effectiveDPI = analysis.chosen
+            sourceMaxDPI = analysis.maxSourceDPI
+            if let sourceMax = analysis.maxSourceDPI {
+                log.debug("Adaptive PDF DPI for \(inputPath.string): chose \(analysis.chosen) (source max \(sourceMax))")
             }
-            do {
-                if !hideFloatingResult {
-                    mainActor { OM.current = optimiser }
-                }
-
-                let backupPath = pdf.path.clopBackupPath
-                optimisedPDF = try pdf.optimise(optimiser: optimiser, aggressiveOptimisation: aggressiveOptimisation)
-                if let cropSize {
-                    optimisedPDF!.cropTo(aspectRatio: cropSize.longEdge ? cropSize.fractionalAspectRatio : cropSize.aspectRatio)
-                }
-                if !allowLarger, cropSize == nil, optimisedPDF!.fileSize >= fileSize {
-                    pdf.path.restore(backupPath: backupPath ?? pdf.path.clopBackupPath, force: true)
-                    mainActor {
-                        optimiser.oldBytes = fileSize
-                        optimiser.url = pdf.path.url
-                    }
-
-                    throw ClopError.pdfSizeLarger(path)
-                }
-
-                // Save optimised PDF path to cache to avoid re-optimising it after it is saved to file
-                mainActor {
-                    if OM.optimisedFilesByHash[pdf.hash] == nil {
-                        previouslyCached = false
-                        OM.optimisedFilesByHash[pdf.hash] = optimisedPDF!.path
-                    }
-                }
-            } catch let ClopProcError.processError(proc) {
-                if proc.terminated {
-                    log.debug("Process terminated by us: \(proc.commandLine)")
-                } else {
-                    log.error("Error optimising PDF \(pathString): \(proc.commandLine)\nOUT: \(proc.out)\nERR: \(proc.err)")
-                    mainActor { optimiser.finish(error: "Optimisation failed") }
-                }
-            } catch ClopError.imageSizeLarger, ClopError.videoSizeLarger, ClopError.pdfSizeLarger {
-                optimisedPDF = pdf
-                mainActor { optimiser.info = "File already fully compressed" }
-            } catch let error as ClopError {
-                log.error("Error optimising PDF \(pathString): \(error.description)")
-                mainActor { optimiser.finish(error: error.humanDescription) }
-            } catch {
-                log.error("Error optimising PDF \(pathString): \(error)")
-                mainActor { optimiser.finish(error: "Optimisation failed") }
+        } else {
+            effectiveDPI = resolvedSetting
+            if aggressive || dpi != nil {
+                sourceMaxDPI = scanPDFMaxImageDPI(at: inputPath)
             }
+        }
 
-            guard var optimisedPDF else { return }
-
-            var shortcutChangedPDF = false
-            if let changedPDF = try? optimisedPDF.runThroughShortcut(shortcut: shortcut, optimiser: optimiser, allowLarger: allowLarger, aggressiveOptimisation: aggressiveOptimisation ?? false, source: source) {
-                optimisedPDF = changedPDF
-                mainActor { optimiser.url = changedPDF.path.url }
-
-                shortcutChangedPDF = true
-            }
-
+        if let sourceMaxDPI {
             mainActor {
-                result = optimisedPDF
-                optimiser.url = optimisedPDF.path.url
-                optimiser.finish(oldBytes: fileSize, newBytes: optimisedPDF.fileSize, oldSize: optimisedPDF.size, removeAfterMs: hideFilesAfter)
-
-                if copyToClipboard {
-                    optimiser.copyToClipboard()
+                if optimiser.oldDPI == nil {
+                    optimiser.oldDPI = sourceMaxDPI
                 }
+                let baseDPI = optimiser.oldDPI ?? sourceMaxDPI
+                optimiser.newDPI = min(baseDPI, effectiveDPI)
+            }
+        }
 
-                if !shortcutChangedPDF, !previouslyCached {
-                    OM.optimisedFilesByHash[pdf.hash] = optimisedPDF.path
+        let totalPages = document.pageCount
+        let chunkDir = FilePath.pdfs.appending("parallel-\(UUID().uuidString)")
+        try? fm.createDirectory(at: chunkDir.url, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: chunkDir.url) }
+
+        var chunks: [(first: Int, last: Int, output: FilePath)] = []
+        var pageStart = 1
+        var idx = 0
+        while pageStart <= totalPages {
+            let pageEnd = min(pageStart + PARALLEL_PDF_CHUNK_SIZE - 1, totalPages)
+            let outPath = chunkDir.appending("chunk-\(idx).pdf")
+            chunks.append((pageStart, pageEnd, outPath))
+            pageStart = pageEnd + 1
+            idx += 1
+        }
+
+        log.debug("Parallel PDF optimisation: \(totalPages) pages → \(chunks.count) chunks (\(PARALLEL_PDF_CONCURRENCY)-way) for \(inputPath.string)")
+
+        let progress = ParallelGSProgress(optimiser: optimiser, totalPages: totalPages)
+        let url = path.url
+        mainActor {
+            optimiser.progress = Progress(totalUnitCount: Int64(totalPages))
+            optimiser.progress.fileURL = url
+            optimiser.progress.localizedDescription = optimiser.operation
+            optimiser.progress.localizedAdditionalDescription = "Page 0 of \(totalPages)"
+            optimiser.progress.publish()
+        }
+
+        let queue = OperationQueue()
+        queue.maxConcurrentOperationCount = PARALLEL_PDF_CONCURRENCY
+        queue.name = "clop.pdf.parallel"
+
+        let stateLock = NSLock()
+        var anyError: Error?
+
+        func setError(_ error: Error) {
+            stateLock.lock()
+            if anyError == nil { anyError = error }
+            stateLock.unlock()
+        }
+
+        for chunk in chunks {
+            queue.addOperation {
+                stateLock.lock()
+                let abort = anyError != nil
+                stateLock.unlock()
+                if abort { return }
+
+                let baseArgs = gsArgs(inputPath.string, chunk.output.string, lossy: aggressive, dpi: effectiveDPI)
+                let args = ["-dFirstPage=\(chunk.first)", "-dLastPage=\(chunk.last)"] + baseArgs
+
+                do {
+                    let proc = try tryProc(GS.string, args: args, tries: 2, captureOutput: true, env: GHOSTSCRIPT_ENV) { p in
+                        mainActor { optimiser.processes.append(p) }
+                        if let pipe = p.standardOutput as? Pipe {
+                            let handle = pipe.fileHandleForReading
+                            handle.readabilityHandler = { pipe in
+                                let data = pipe.availableData
+                                guard !data.isEmpty else {
+                                    handle.readabilityHandler = nil
+                                    return
+                                }
+                                guard let string = String(data: data, encoding: .utf8) else { return }
+                                var n = 0
+                                for line in string.components(separatedBy: .newlines) where line.hasPrefix("Page ") {
+                                    n += 1
+                                }
+                                if n > 0 { progress.increment(by: n) }
+                            }
+                        }
+                    }
+                    guard proc.terminationStatus == 0 else {
+                        setError(ClopProcError.processError(proc))
+                        queue.cancelAllOperations()
+                        return
+                    }
+                } catch {
+                    setError(error)
+                    queue.cancelAllOperations()
                 }
             }
         }
-    }
-    pdfOptimiseDebouncers[pathString] = workItem
 
-    while !done, !workItem.isCancelled {
-        try await Task.sleep(nanoseconds: 100_000_000)
+        queue.waitUntilAllOperationsAreFinished()
+
+        if let anyError {
+            mainActor { optimiser.progress.unpublish() }
+            throw anyError
+        }
+
+        let merged = PDFDocument()
+        var globalIdx = 0
+        for chunk in chunks {
+            guard let chunkDoc = PDFDocument(url: chunk.output.url) else {
+                mainActor { optimiser.progress.unpublish() }
+                throw ClopError.invalidPDF(chunk.output)
+            }
+            for p in 0 ..< chunkDoc.pageCount {
+                if let page = chunkDoc.page(at: p) {
+                    merged.insert(page, at: globalIdx)
+                    globalIdx += 1
+                }
+            }
+        }
+        guard merged.write(to: tempFile.url) else {
+            mainActor { optimiser.progress.unpublish() }
+            throw ClopError.invalidPDF(tempFile)
+        }
+
+        tempFile.waitForFile(for: 2)
+        try? tempFile.setOptimisationStatusXattr("true")
+        if tempFile != path {
+            if Defaults[.preserveDates] {
+                tempFile.copyCreationModificationDates(from: path)
+            }
+            try tempFile.copy(to: path, force: true)
+        }
+
+        mainActor { optimiser.progress.unpublish() }
+
+        return PDF(path)
     }
-    return result
 }

@@ -9,9 +9,12 @@ import AppIntents
 import Defaults
 import Foundation
 import Lowtech
+import os
 import PDFKit
 import System
 import UniformTypeIdentifiers
+
+private let log = Logger(subsystem: LOG_SUBSYSTEM, category: "ClopShortcuts")
 
 extension IntentFile {
     var url: URL {
@@ -134,7 +137,7 @@ struct ChangePlaybackSpeedOptimiseFileIntent: AppIntent {
         } catch let error as ClopError {
             throw IntentError.message(error.description)
         } catch {
-            log.error(error.localizedDescription)
+            log.error("\(error.localizedDescription)")
             throw IntentError.message(error.localizedDescription)
         }
 
@@ -252,7 +255,7 @@ struct ConvertImageIntent: AppIntent {
         }
         var convertedImage = try img.convert(to: type, asTempFile: true)
         if type == .png || type == .jpeg {
-            convertedImage = await (try? optimiseImage(convertedImage, copyToClipboard: false, debounceMS: 0, hideFloatingResult: hideFloatingResult, aggressiveOptimisation: aggressiveOptimisation, source: .shortcuts)) ?? convertedImage
+            convertedImage = await (try? runImagePipeline(convertedImage, actions: [.optimise], hideFloatingResult: hideFloatingResult, aggressiveOptimisation: aggressiveOptimisation, source: .shortcuts)) ?? convertedImage
         }
 
         var outFilePath: FilePath =
@@ -409,7 +412,7 @@ struct CropOptimiseFileIntent: AppIntent {
         } catch let error as ClopError {
             throw IntentError.message(error.description)
         } catch {
-            log.error(error.localizedDescription)
+            log.error("\(error.localizedDescription)")
             throw IntentError.message(error.localizedDescription)
         }
 
@@ -608,7 +611,7 @@ struct OptimiseFileIntent: AppIntent {
         } catch let error as ClopError {
             throw IntentError.message(error.description)
         } catch {
-            log.error(error.localizedDescription)
+            log.error("\(error.localizedDescription)")
             throw IntentError.message(error.localizedDescription)
         }
 
@@ -730,7 +733,7 @@ struct DownscaleFileIntent: AppIntent {
         } catch let error as ClopError {
             throw IntentError.message(error.description)
         } catch {
-            log.error(error.localizedDescription)
+            log.error("\(error.localizedDescription)")
             throw IntentError.message(error.localizedDescription)
         }
 
@@ -841,7 +844,7 @@ struct OptimiseURLIntent: AppIntent {
         } catch let error as ClopError {
             throw IntentError.message(error.description)
         } catch {
-            log.error(error.localizedDescription)
+            log.error("\(error.localizedDescription)")
             throw IntentError.message(error.localizedDescription)
         }
 

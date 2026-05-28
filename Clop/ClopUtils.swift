@@ -8,7 +8,10 @@
 import Defaults
 import Foundation
 import Lowtech
+import os
 import System
+
+private let log = Logger(subsystem: LOG_SUBSYSTEM, category: "ClopUtils")
 
 func shellProc(_ launchPath: String = "/bin/zsh", args: [String], env: [String: String]? = nil, out: Pipe? = nil, err: Pipe? = nil) -> Process? {
     let outputDir = FilePath.processLogs.appending("\(launchPath) \(args)".safeFilename)
@@ -136,6 +139,7 @@ extension URL {
     var isImage: Bool { hasExtension(from: IMAGE_EXTENSIONS) }
     var isVideo: Bool { hasExtension(from: VIDEO_EXTENSIONS) }
     var isPDF: Bool { hasExtension(from: ["pdf"]) }
+    var isAudio: Bool { hasExtension(from: AUDIO_EXTENSIONS) }
 
     func hasExtension(from exts: [String]) -> Bool {
         exts.contains((pathExtension.split(separator: "@").last?.s ?? pathExtension).lowercased())
@@ -147,6 +151,7 @@ extension FilePath {
     var isImage: Bool { hasExtension(from: IMAGE_EXTENSIONS) }
     var isVideo: Bool { hasExtension(from: VIDEO_EXTENSIONS) }
     var isPDF: Bool { hasExtension(from: ["pdf"]) }
+    var isAudio: Bool { hasExtension(from: AUDIO_EXTENSIONS) }
 
     static var workdir = FilePath.dir(Defaults[.workdir], permissions: 0o755) {
         didSet {
@@ -167,6 +172,7 @@ extension FilePath {
     static var videos: FilePath { FilePath.dir(workdir / "videos", permissions: 0o755) }
     static var images: FilePath { FilePath.dir(workdir / "images", permissions: 0o755) }
     static var pdfs: FilePath { FilePath.dir(workdir / "pdfs", permissions: 0o755) }
+    static var audios: FilePath { FilePath.dir(workdir / "audios", permissions: 0o755) }
     static var conversions: FilePath { FilePath.dir(workdir / "conversions", permissions: 0o755) }
     static var downloads: FilePath { FilePath.dir(workdir / "downloads", permissions: 0o755) }
     static var forResize: FilePath { FilePath.dir(workdir / "for-resize", permissions: 0o755) }
@@ -195,10 +201,9 @@ extension FilePath {
 
     func stripExif() {
         let tempFile = URL.temporaryDirectory.appendingPathComponent(name.string).filePath!
-        let args = [EXIFTOOL.string, "-XResolution=72", "-YResolution=72"]
-            + ["-all=", "-tagsFromFile", "@"]
-            + ["-XResolution", "-YResolution", "-Orientation"] + (Defaults[.preserveColorMetadata] ? ["-ColorSpaceTags", "-icc_profile"] : [])
-            + ["-o", tempFile.string, string]
+        var args = [EXIFTOOL.string, "-XResolution=72", "-YResolution=72", "-all=", "-tagsFromFile", "@", "-XResolution", "-YResolution", "-Orientation"]
+        if Defaults[.preserveColorMetadata] { args += ["-ColorSpaceTags", "-icc_profile"] }
+        args += ["-o", tempFile.string, string]
         let exifProc = shell("/usr/bin/perl", args: args, wait: true)
 
         guard tempFile.exists else {
@@ -212,7 +217,7 @@ extension FilePath {
         _ = try? tempFile.move(to: self, force: true)
 
         #if DEBUG
-            log.debug(args.joined(separator: " "))
+            log.debug("\(args.joined(separator: " "))")
             log.debug("\tout: \"\(exifProc.o ?? "")\" err: \"\(exifProc.e ?? "")\"")
         #endif
     }
@@ -268,18 +273,20 @@ extension FilePath {
             additionalArgs += ["-x"] + excludeTags.map { [$0] }.joined(separator: ["-x"]).map { $0 }
         }
 
-        let tagsToKeep = if stripMetadata {
-            ["-XResolution", "-YResolution", "-Orientation"] + (!hdr && Defaults[.preserveColorMetadata] ? ["-ColorSpaceTags", "-icc_profile"] : [])
-        } else {
-            isVideo ? ["-All:All"] : []
+        var tagsToKeep: [String] = []
+        if stripMetadata {
+            tagsToKeep = ["-XResolution", "-YResolution", "-Orientation"]
+            if !hdr, Defaults[.preserveColorMetadata] { tagsToKeep += ["-ColorSpaceTags", "-icc_profile"] }
+        } else if isVideo {
+            tagsToKeep = ["-All:All"]
         }
-        let args = [EXIFTOOL.string, "-overwrite_original", "-XResolution=72", "-YResolution=72"]
-            + additionalArgs
-            + ["-extractEmbedded", "-tagsFromFile", source.string]
-            + tagsToKeep
-            + [string]
+        var args = [EXIFTOOL.string, "-overwrite_original", "-XResolution=72", "-YResolution=72"]
+        args += additionalArgs
+        args += ["-extractEmbedded", "-tagsFromFile", source.string]
+        args += tagsToKeep
+        args += [string]
 
-        log.debug(args.map { $0.shellString.replacingOccurrences(of: " ", with: "\\ ") }.joined(separator: " "))
+        log.debug("\(args.map { $0.shellString.replacingOccurrences(of: " ", with: "\\ ") }.joined(separator: " "))")
         let exifProc = shell("/usr/bin/perl", args: args, wait: true)
         log.debug("\tout: \"\(exifProc.o ?? "")\" err: \"\(exifProc.e ?? "")\"")
     }
@@ -301,20 +308,21 @@ import QuickLookThumbnailing
 
 let SCREEN_SCALE = NSScreen.main!.backingScaleFactor
 
-func generateThumbnail(for url: URL, size: CGSize, onCompletion: @escaping (QLThumbnailRepresentation) -> Void) {
+func generateThumbnail(for url: URL, size: CGSize, onCompletion: @escaping (QLThumbnailRepresentation) -> Void, onFailure: (() -> Void)? = nil) {
     let request = QLThumbnailGenerator.Request(
         fileAt: url,
         size: size,
         scale: SCREEN_SCALE,
-        representationTypes: .thumbnail
+        representationTypes: .all
     )
 
-    QLThumbnailGenerator.shared.generateRepresentations(for: request) { thumbnail, type, error in
+    QLThumbnailGenerator.shared.generateBestRepresentation(for: request) { thumbnail, error in
         DispatchQueue.main.async {
             if let error {
                 log.error("Error on generating thumbnail for \(url): \(error.localizedDescription)")
             }
             guard let thumbnail else {
+                onFailure?()
                 return
             }
             onCompletion(thumbnail)
@@ -513,12 +521,12 @@ let BIN_ARCHIVE = Bundle.main.url(forResource: "bin", withExtension: "tar.lrz")!
 let BIN_ARCHIVE_HASH_PATH = Bundle.main.url(forResource: "bin", withExtension: "tar.lrz.sha256")! // /Applications/Clop.app/Contents/Resources/bin.tar.lrz.sha256
 
 let OLD_BIN_DIRS = [
-    APP_SCRIPTS_DIR.appendingPathComponent("com.lowtechguys.Clop"), // ~/Library/Application Scripts/com.lowtechguys.Clop/com.lowtechguys.Clop/
-    APP_SCRIPTS_DIR.appendingPathComponent("bin-arm64"), // ~/Library/Application Scripts/com.lowtechguys.Clop/bin-arm64
-    APP_SCRIPTS_DIR.appendingPathComponent("bin-x86"), // ~/Library/Application Scripts/com.lowtechguys.Clop/bin-x86
+    APP_SCRIPTS_DIR.appendingPathComponent("com.ziben.Clop"), // ~/Library/Application Scripts/com.ziben.Clop/com.ziben.Clop/
+    APP_SCRIPTS_DIR.appendingPathComponent("bin-arm64"), // ~/Library/Application Scripts/com.ziben.Clop/bin-arm64
+    APP_SCRIPTS_DIR.appendingPathComponent("bin-x86"), // ~/Library/Application Scripts/com.ziben.Clop/bin-x86
 ]
 let BIN_ARCHIVE_HASH = fm.contents(atPath: BIN_ARCHIVE_HASH_PATH.path)! // f62955f10479b7df4d516f8a714290f2402faaf8960c6c44cae3dfc68f45aabd
-let BIN_HASH_FILE = BIN_DIR.appendingPathComponent("sha256hash") // ~/Library/Application Scripts/com.lowtechguys.Clop/bin/sha256hash
+let BIN_HASH_FILE = BIN_DIR.appendingPathComponent("sha256hash") // ~/Library/Application Scripts/com.ziben.Clop/bin/sha256hash
 
 func nsalert(error: String) {
     mainThread {

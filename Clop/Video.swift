@@ -4,8 +4,11 @@ import CoreTransferable
 import Defaults
 import Foundation
 import Lowtech
+import os
 import System
 import UniformTypeIdentifiers
+
+private let log = Logger(subsystem: LOG_SUBSYSTEM, category: "Video")
 
 var FFMPEG = BIN_DIR.appendingPathComponent("ffmpeg").filePath!
 var GIFSKI = BIN_DIR.appendingPathComponent("gifski").filePath!
@@ -88,7 +91,7 @@ class Video: Optimisable {
     #endif
 
     func convertToGIF(optimiser: Optimiser, maxWidth: Int, fps: Int) throws -> Image {
-        log.debug("Converting video \(path.string) to GIF")
+        log.debug("Converting video \(self.path.string) to GIF")
         let tempDir = URL.temporaryDirectory.appendingPathComponent("\(path.stem!)_gif_pngs").filePath!
         tempDir.mkdir(withIntermediateDirectories: true)
 
@@ -200,6 +203,7 @@ class Video: Optimisable {
     func optimise(
         optimiser: Optimiser,
         forceMP4: Bool = false,
+        outputExtension: String? = nil,
         backup: Bool = true,
         resizeTo newSize: CGSize? = nil,
         cropTo cropSize: CropSize? = nil,
@@ -207,29 +211,30 @@ class Video: Optimisable {
         originalPath: FilePath? = nil,
         aggressiveOptimisation: Bool? = nil,
         removeAudio: Bool? = nil,
-        useHEVC: Bool = false,
-        fpsCapOverride: Int? = nil,
-        qualityOverride: Int? = nil
+        encoderOverride: [String]? = nil,
+        videoEncoderOverride: VideoEncoder? = nil
     ) throws -> Video {
-        log.debug("Optimising video \(path.string)")
+        log.debug("Optimising video \(self.path.string)")
         guard let name = path.lastComponent else {
-            log.error("No file name for path: \(path)")
+            log.error("No file name for path: \(self.path)")
             throw ClopError.fileNotFound(path)
         }
 
         path.waitForFile(for: 3)
         try? path.setOptimisationStatusXattr("pending")
 
-        let outputPath = forceMP4 ? FilePath.videos.appending("\(name.stem).mp4") : path
+        let outputPath: FilePath = if let outputExtension {
+            FilePath.videos.appending("\(name.stem).\(outputExtension)")
+        } else if forceMP4 {
+            FilePath.videos.appending("\(name.stem).mp4")
+        } else {
+            path
+        }
         var inputPath = originalPath ?? ((path == outputPath || backup) ? (path.backup(path: path.clopBackupPath, operation: .copy) ?? path) : path)
         var additionalArgs = [String]()
 
         var newFPS = fps
-        if let fpsCapOverride {
-            // Ziben custom: clipboard FPS cap override
-            newFPS = Float(fpsCapOverride)
-            additionalArgs += ["-fpsmax", "\(fpsCapOverride)"]
-        } else if Defaults[.capVideoFPS] {
+        if Defaults[.capVideoFPS] {
             newFPS = Defaults[.targetVideoFPS]
             if newFPS == -2, let fps {
                 newFPS = max(fps / 2, Defaults[.minVideoFPS])
@@ -257,40 +262,43 @@ class Video: Optimisable {
         let duration = duration
         let audioRemoved = removeAudio ?? Defaults[.removeAudioFromVideos]
         let convertAudioToAAC = Defaults[.convertAudioToAAC]
-        let aggressive = aggressiveOptimisation ?? Defaults[.useAggressiveOptimisationMP4]
+        let encoder = videoEncoderOverride ?? Defaults[.videoEncoder]
+        let aggressive = aggressiveOptimisation ?? (encoder == .slowHighQuality)
         mainActor { optimiser.aggressive = aggressive }
-        #if arch(arm64)
-            let encoderArgs: [String]
-            if useHEVC {
-                // HEVC hardware encoding via VideoToolbox (Ziben custom)
-                let hevcQuality = qualityOverride ?? 55
-                encoderArgs = useAggressiveOptimisation(aggressiveSetting: aggressiveOptimisation ?? false)
-                    ? ["-vcodec", "libx265", "-crf", "28", "-preset", "medium", "-tag:v", "hvc1"]
-                    : ["-vcodec", "hevc_videotoolbox", "-q:v", "\(hevcQuality)", "-tag:v", "hvc1"]
-            } else {
-                encoderArgs = useAggressiveOptimisation(aggressiveSetting: aggressiveOptimisation ?? false)
-                    ? ["-vcodec", "h264", "-tag:v", "avc1"] + (aggressive ? ["-preset", "slower", "-crf", "26"] : [])
-                    : ["-vcodec", "h264_videotoolbox", "-q:v", "45", "-tag:v", "avc1"]
+        let encoderArgs: [String] = encoderOverride ?? {
+            #if arch(arm64)
+                let useFastEncoder = encoder == .fast && aggressiveOptimisation != true
+                let useAdaptiveFast = encoder != .fast && Defaults[.adaptiveVideoSize] && !useAggressiveOptimisation(aggressiveSetting: aggressiveOptimisation ?? false)
+                if useFastEncoder || useAdaptiveFast {
+                    return ["-vcodec", "h264_videotoolbox", "-q:v", "45", "-tag:v", "avc1"]
+                }
+            #endif
+            switch (aggressiveOptimisation == true) ? .slowHighQuality : encoder {
+            case .fast:
+                return ["-vcodec", "h264", "-tag:v", "avc1"]
+            case .slowHighQuality:
+                return ["-vcodec", "h264", "-tag:v", "avc1", "-preset", "slower"]
+            case .visuallyLossless:
+                return ["-vcodec", "h264", "-tag:v", "avc1", "-crf", "17"]
             }
-        #else
-            let encoderArgs: [String]
-            if useHEVC {
-                encoderArgs = ["-vcodec", "libx265", "-crf", "28", "-preset", "medium", "-tag:v", "hvc1"]
-            } else {
-                encoderArgs = ["-vcodec", "h264", "-tag:v", "avc1"] + (aggressive ? ["-preset", "slower", "-crf", "26"] : [])
-            }
-        #endif
+        }()
+        let outExt = outputPath.extension?.lowercased() ?? ""
+        let isWebm = outExt == "webm"
         let audioArgs: [String] = if audioRemoved {
             ["-an"]
+        } else if isWebm {
+            ["-c:a", "libopus", "-b:a", "128k", "-map", "0:v", "-map", "0:a?"]
         } else if convertAudioToAAC {
             ["-c:a", "aac", "-b:a", "192k", "-map", "0:v", "-map", "0:a?"]
         } else {
             ["-c:a", "copy", "-map", "0:v", "-map", "0:a?"]
         }
-        let args = ["-y", "-i", inputPath.string]
-            + (["mp4", "mov", "hevc"].contains(outputPath.extension?.lowercased()) ? encoderArgs : [])
-            + audioArgs
-            + additionalArgs + ["-movflags", "+faststart", "-progress", "pipe:2", "-nostats", "-hide_banner", "-stats_period", "0.1", outputPath.string]
+        let useEncoder = encoderOverride != nil || ["mp4", "mov", "hevc"].contains(outExt)
+        var args = ["-y", "-i", inputPath.string]
+        if useEncoder { args += encoderArgs }
+        args += audioArgs + additionalArgs
+        if !isWebm { args += ["-movflags", "+faststart"] }
+        args += ["-progress", "pipe:2", "-nostats", "-hide_banner", "-stats_period", "0.1", outputPath.string]
 
         var realDuration: Int64?
         if let duration {
@@ -351,7 +359,7 @@ class Video: Optimisable {
                     optimiser.convertedFromURL = backupPath.url
                 }
             }
-            if behaviour != .temporary {
+            if behaviour != .temporary, newVideo.path.dir != convertedFrom.path.dir {
                 let path = try newVideo.path.copy(to: convertedFrom.path.dir, force: true)
                 if behaviour != .inPlace {
                     mainActor {
@@ -359,6 +367,10 @@ class Video: Optimisable {
                     }
                 }
                 newVideo = Video(path: path, metadata: metadata, convertedFrom: convertedFrom)
+            } else if behaviour != .inPlace {
+                mainActor {
+                    optimiser.convertedFromURL = convertedFrom.path.url
+                }
             }
         }
         mainActor {
@@ -384,11 +396,8 @@ func videoHasAudio(path: FilePath) async throws -> Bool {
 
 func isVideoValid(path: FilePath) async throws -> Bool {
     let avAsset = AVURLAsset(url: path.url)
-    let tracks = try await avAsset.load(.tracks)
-    guard let track = try await avAsset.loadTracks(withMediaType: .video).first else {
-        return false
-    }
-    return true
+    _ = try await avAsset.load(.tracks)
+    return try await avAsset.loadTracks(withMediaType: .video).first != nil
 }
 
 func getVideoMetadata(path: FilePath) async throws -> VideoMetadata? {
@@ -496,7 +505,7 @@ let GIFSKI_FRAME_REGEX = try! Regex(#"Frame (\d+) / (\d+)"#, as: (Substring, Sub
         for line in lines where line.trimmed.isNotEmpty {
             guard line.starts(with: "out_time_us="), let time = Int64(line.suffix(line.count - 12)), time > 0 else {
                 if !FFMPEG_IGNORE_LINES.contains(where: line.starts(with:)) {
-                    log.verbose("FFmpeg: \(line)")
+                    log.trace("FFmpeg: \(line)")
                 }
                 continue
             }
@@ -574,426 +583,4 @@ var processTerminated = Set<pid_t>()
         return false
     }
     return true
-}
-
-@discardableResult
-@MainActor func optimiseVideo(
-    _ video: Video,
-    copyToClipboard: Bool = false,
-    id: String? = nil,
-    debounceMS: Int = 0,
-    allowLarger: Bool = false,
-    hideFloatingResult: Bool = false,
-    aggressiveOptimisation: Bool? = nil,
-    noConversion: Bool = false,
-    source: OptimisationSource? = nil,
-    removeAudio: Bool? = nil,
-    shortcut: Shortcut? = nil
-) async throws -> Video? {
-    let path = video.path
-    let pathString = path.string
-    let itemType = ItemType.from(filePath: path)
-    let optimiser = OM.optimiser(id: id ?? pathString, type: itemType, operation: debounceMS > 0 ? "Waiting for video to be ready" : "Optimising", hidden: hideFloatingResult, source: source)
-    if optimiser.oldBytes == 0 {
-        optimiser.oldBytes = video.fileSize
-    }
-    if optimiser.oldSize == nil {
-        optimiser.oldSize = video.size
-    }
-    if optimiser.url == nil {
-        optimiser.url = path.url
-    }
-
-    var done = false
-    var result: Video?
-
-    videoOptimiseDebouncers[pathString]?.cancel()
-    let workItem = mainAsyncAfter(ms: debounceMS) {
-        optimiser.operation = (Defaults[.showImages] ? "Optimising" : "Optimising \(optimiser.filename)") + (aggressiveOptimisation ?? false ? " (aggressive)" : "")
-        optimiser.originalURL = path.url
-        OM.optimisers = OM.optimisers.without(optimiser).with(optimiser)
-        showFloatingThumbnails()
-
-        let fileSize = video.fileSize
-        var previouslyCached = true
-
-        videoOptimisationQueue.addOperation {
-            var optimisedVideo: Video?
-            defer {
-                mainActor { done = true }
-            }
-
-            do {
-                if !hideFloatingResult {
-                    mainActor { OM.current = optimiser }
-                }
-
-                // MARK: - Auto resize & HEVC for videos (Ziben custom)
-                // Apply presets to clipboard AND watched folder sources
-                let isVideoPresetSource: Bool = {
-                    guard let source else { return false }
-                    if source == .clipboard { return true }
-                    if case .dir = source { return true }
-                    return false
-                }()
-
-                var clipboardResizeSize: CGSize? = nil
-                var clipboardUseHEVC = false
-                var clipboardRemoveAudio = removeAudio
-                var clipboardFPSCap: Int? = nil
-
-                if isVideoPresetSource, let preset = VIDEO_PRESETS[Defaults[.activeVideoPreset]] {
-                    // Apply preset settings
-                    if preset.maxWidth > 0, preset.maxHeight > 0, let videoSize = video.size {
-                        let maxW = CGFloat(preset.maxWidth)
-                        let maxH = CGFloat(preset.maxHeight)
-                        if videoSize.width > maxW || videoSize.height > maxH {
-                            let scaleW = maxW / videoSize.width
-                            let scaleH = maxH / videoSize.height
-                            let scale = min(scaleW, scaleH)
-                            let newW = Int((videoSize.width * scale).rounded(.down))
-                            let newH = Int((videoSize.height * scale).rounded(.down))
-                            // Ensure even dimensions (required by most codecs)
-                            clipboardResizeSize = CGSize(width: newW - (newW % 2), height: newH - (newH % 2))
-                            log.debug("[\(preset.name)] Auto-resizing clipboard video from \(videoSize.width.i)x\(videoSize.height.i) to \(newW)x\(newH)")
-                        }
-                    }
-                    clipboardUseHEVC = preset.useHEVC
-                    clipboardFPSCap = preset.fpsCap
-                    if preset.stripAudio {
-                        clipboardRemoveAudio = true
-                    }
-                }
-
-                let presetQuality = VIDEO_PRESETS[Defaults[.activeVideoPreset]]?.quality
-
-                optimisedVideo = try video.optimise(
-                    optimiser: optimiser,
-                    forceMP4: !noConversion && Defaults[.formatsToConvertToMP4].contains(itemType.utType ?? .mpeg4Movie),
-                    resizeTo: clipboardResizeSize,
-                    aggressiveOptimisation: aggressiveOptimisation,
-                    removeAudio: clipboardRemoveAudio,
-                    useHEVC: clipboardUseHEVC,
-                    fpsCapOverride: clipboardFPSCap,
-                    qualityOverride: source == .clipboard ? presetQuality : nil
-                )
-                if optimisedVideo!.path.extension == video.path.extension, optimisedVideo!.path != video.path {
-                    let path = try optimisedVideo!.path.move(to: video.path, force: true)
-                    optimisedVideo = optimisedVideo?.copyWithPath(path)
-                }
-                if optimisedVideo!.convertedFrom == nil, optimisedVideo!.fileSize >= fileSize, !allowLarger {
-                    video.path.restore(backupPath: video.path.clopBackupPath, force: true)
-                    mainActor {
-                        optimiser.oldBytes = fileSize
-                        optimiser.url = video.path.url
-                    }
-
-                    throw ClopError.videoSizeLarger(path)
-                }
-
-                // Save optimised video path to cache to avoid re-optimising it after it is saved to file
-                mainActor {
-                    if OM.optimisedFilesByHash[video.hash] == nil {
-                        previouslyCached = false
-                        OM.optimisedFilesByHash[video.hash] = optimisedVideo!.path
-                    }
-                }
-            } catch let ClopProcError.processError(proc) {
-                if proc.terminated {
-                    log.debug("Process terminated by us: \(proc.commandLine)")
-                } else {
-                    log.error("Error optimising video \(pathString): \(proc.commandLine)\nOUT: \(proc.out)\nERR: \(proc.err)")
-                    mainActor { optimiser.finish(error: "Optimisation failed") }
-                }
-            } catch ClopError.imageSizeLarger, ClopError.videoSizeLarger, ClopError.pdfSizeLarger {
-                optimisedVideo = video
-                mainActor { optimiser.info = "File already fully compressed" }
-            } catch let error as ClopError {
-                log.error("Error optimising video \(pathString): \(error.description)")
-                mainActor { optimiser.finish(error: error.humanDescription) }
-            } catch {
-                log.error("Error optimising video \(pathString): \(error)")
-                mainActor { optimiser.finish(error: "Optimisation failed") }
-            }
-
-            guard var optimisedVideo else { return }
-
-            var shortcutChangedVideo = false
-            if let changedVideo = try? optimisedVideo.runThroughShortcut(shortcut: shortcut, optimiser: optimiser, allowLarger: allowLarger, aggressiveOptimisation: aggressiveOptimisation ?? false, source: source) {
-                optimisedVideo = changedVideo
-                mainActor { optimiser.url = changedVideo.path.url }
-
-                shortcutChangedVideo = true
-            }
-
-            mainActor {
-                result = optimisedVideo
-                optimiser.url = optimisedVideo.path.url
-                optimiser.finish(oldBytes: fileSize, newBytes: optimisedVideo.fileSize, removeAfterMs: hideFilesAfter)
-
-                if copyToClipboard {
-                    optimiser.copyToClipboard()
-                }
-
-                if !shortcutChangedVideo, !previouslyCached {
-                    OM.optimisedFilesByHash[video.hash] = optimisedVideo.path
-                }
-            }
-        }
-    }
-    videoOptimiseDebouncers[pathString] = workItem
-
-    while !done, !workItem.isCancelled {
-        try await Task.sleep(nanoseconds: 100_000_000)
-    }
-    return result
-}
-
-@discardableResult
-@MainActor func downscaleVideo(
-    _ video: Video,
-    originalPath: FilePath? = nil,
-    copyToClipboard: Bool = false,
-    id: String? = nil,
-    toFactor factor: Double? = nil,
-    cropTo cropSize: CropSize? = nil,
-    hideFloatingResult: Bool = false,
-    aggressiveOptimisation: Bool? = nil,
-    noConversion: Bool = false,
-    source: OptimisationSource? = nil,
-    removeAudio: Bool? = nil
-) async throws -> Video? {
-    guard let resolution = video.size else {
-        throw ClopError.videoError("Error getting resolution for \(video.path.string)")
-    }
-
-    let pathString = video.path.string
-    videoOptimiseDebouncers[pathString]?.cancel()
-    if let cropSize {
-        scalingFactor = cropSize.factor(from: resolution)
-    } else if let factor {
-        scalingFactor = factor
-    } else if let currentFactor = opt(id ?? pathString)?.downscaleFactor {
-        scalingFactor = max(currentFactor > 0.5 ? currentFactor - 0.25 : currentFactor - 0.1, 0.1)
-    } else {
-        scalingFactor = max(scalingFactor > 0.5 ? scalingFactor - 0.25 : scalingFactor - 0.1, 0.1)
-    }
-
-    let itemType = ItemType.from(filePath: video.path)
-    let scaleString = if let size = cropSize?.computedSize(from: resolution) {
-        "\(size.width > 0 ? size.width.i.s : "Auto")×\(size.height > 0 ? size.height.i.s : "Auto")"
-    } else {
-        "\((scalingFactor * 100).intround)%"
-    }
-
-    let optimiser = OM.optimiser(id: id ?? pathString, type: itemType, operation: "Scaling to \(scaleString)", hidden: hideFloatingResult, source: source)
-    let aggressive = aggressiveOptimisation ?? optimiser.aggressive
-    if aggressive {
-        optimiser.operation += " (aggressive)"
-    }
-    optimiser.remover = nil
-    optimiser.inRemoval = false
-    optimiser.stop(remove: false)
-    optimiser.downscaleFactor = scalingFactor
-
-    if optimiser.oldBytes == 0 {
-        optimiser.oldBytes = video.fileSize
-    }
-    if optimiser.oldSize == nil {
-        optimiser.oldSize = resolution
-    }
-    if optimiser.url == nil {
-        optimiser.url = video.path.url
-    }
-
-    let changePlaybackSpeedFactor = optimiser.changePlaybackSpeedFactor
-
-    var result: Video?
-    var done = false
-
-    let workItem = optimisationQueue.asyncAfter(ms: 500) {
-        defer {
-            mainActor { done = true }
-        }
-
-        var optimisedVideo: Video?
-        let newSize = cropSize?.computedSize(from: resolution) ?? resolution.scaled(by: scalingFactor)
-        let fileSize = video.fileSize
-        do {
-            optimisedVideo = try video.optimise(
-                optimiser: optimiser,
-                forceMP4: !noConversion && Defaults[.formatsToConvertToMP4].contains(itemType.utType ?? .mpeg4Movie),
-                resizeTo: newSize,
-                cropTo: cropSize,
-                changePlaybackSpeedBy: changePlaybackSpeedFactor,
-                originalPath: [.cli, .finder, .service, .dropZone].contains(source) ? video.path : originalPath,
-                aggressiveOptimisation: aggressive,
-                removeAudio: removeAudio
-            )
-            if optimisedVideo!.path.extension == video.path.extension, optimisedVideo!.path != video.path {
-                let path = try optimisedVideo!.path.move(to: video.path, force: true)
-                optimisedVideo = optimisedVideo?.copyWithPath(path)
-            }
-        } catch let ClopProcError.processError(proc) {
-            if proc.terminated {
-                log.debug("Process terminated by us: \(proc.commandLine)")
-            } else {
-                log.error("Error downscaling video \(pathString): \(proc.commandLine)\nOUT: \(proc.out)\nERR: \(proc.err)")
-                mainActor {
-                    optimiser.finish(error: "Downscaling failed")
-                }
-            }
-        } catch ClopError.imageSizeLarger, ClopError.videoSizeLarger, ClopError.pdfSizeLarger {
-            optimisedVideo = video
-            mainActor { optimiser.info = "File already fully compressed" }
-        } catch let error as ClopError {
-            log.error("Error downscaling video \(pathString): \(error.description)")
-            mainActor { optimiser.finish(error: error.humanDescription) }
-        } catch {
-            log.error("Error downscaling video \(pathString): \(error)")
-            mainActor { optimiser.finish(error: "Optimisation failed") }
-        }
-
-        guard let optimisedVideo else { return }
-        mainActor {
-            optimiser.url = optimisedVideo.path.url
-            if !hideFloatingResult {
-                OM.current = optimiser
-            }
-            optimiser.finish(oldBytes: fileSize, newBytes: optimisedVideo.fileSize, oldSize: resolution, newSize: newSize, removeAfterMs: hideFilesAfter)
-            result = optimisedVideo
-            if copyToClipboard {
-                optimiser.copyToClipboard()
-            }
-        }
-    }
-    videoOptimiseDebouncers[pathString] = workItem
-
-    while !done, !workItem.isCancelled {
-        try await Task.sleep(nanoseconds: 100_000_000)
-    }
-
-    return result
-}
-
-@discardableResult
-@MainActor func changePlaybackSpeedVideo(
-    _ video: Video,
-    originalPath: FilePath? = nil,
-    copyToClipboard: Bool = false,
-    id: String? = nil,
-    byFactor factor: Double? = nil,
-    hideFloatingResult: Bool = false,
-    aggressiveOptimisation: Bool? = nil,
-    noConversion: Bool = false,
-    source: OptimisationSource? = nil,
-    removeAudio: Bool? = nil
-) async throws -> Video? {
-    let pathString = video.path.string
-    videoOptimiseDebouncers[pathString]?.cancel()
-
-    let changePlaybackSpeedFactor: Double = if let factor {
-        factor
-    } else if let currentFactor = opt(id ?? pathString)?.changePlaybackSpeedFactor {
-        min(currentFactor < 2 ? currentFactor + 0.25 : currentFactor + 1.0, 10)
-    } else {
-        1.25
-    }
-
-    let itemType = ItemType.from(filePath: video.path)
-    let optimiser = OM.optimiser(
-        id: id ?? pathString,
-        type: itemType,
-        operation: changePlaybackSpeedFactor > 1
-            ? "Speeding up by \(changePlaybackSpeedFactor < 2 ? changePlaybackSpeedFactor.str(decimals: 2) : changePlaybackSpeedFactor.i.s)x"
-            : (
-                changePlaybackSpeedFactor == 1
-                    ? "Reverting to original speed"
-                    : "Slowing down to \(changePlaybackSpeedFactor != 0.5 ? changePlaybackSpeedFactor.str(decimals: 2) : "0.5")x"
-            ),
-        hidden: hideFloatingResult, source: source
-    )
-    let aggressive = aggressiveOptimisation ?? optimiser.aggressive
-    if aggressive {
-        optimiser.operation += " (aggressive)"
-    }
-    optimiser.remover = nil
-    optimiser.inRemoval = false
-    optimiser.stop(remove: false)
-    optimiser.changePlaybackSpeedFactor = changePlaybackSpeedFactor
-    if optimiser.oldBytes == 0 {
-        optimiser.oldBytes = video.fileSize
-    }
-    if optimiser.oldSize == nil {
-        optimiser.oldSize = video.size
-    }
-    if optimiser.url == nil {
-        optimiser.url = video.path.url
-    }
-
-    var result: Video?
-    var done = false
-
-    let resolution = optimiser.newSize
-    let workItem = optimisationQueue.asyncAfter(ms: 500) {
-        defer {
-            mainActor { done = true }
-        }
-
-        var optimisedVideo: Video?
-        let fileSize = video.fileSize
-        do {
-            optimisedVideo = try video.optimise(
-                optimiser: optimiser,
-                forceMP4: !noConversion && Defaults[.formatsToConvertToMP4].contains(itemType.utType ?? .mpeg4Movie),
-                resizeTo: resolution,
-                changePlaybackSpeedBy: changePlaybackSpeedFactor,
-                originalPath: [.cli, .finder, .service, .dropZone].contains(source) ? video.path : originalPath,
-                aggressiveOptimisation: aggressive,
-                removeAudio: removeAudio
-            )
-            if optimisedVideo!.path.extension == video.path.extension, optimisedVideo!.path != video.path {
-                let path = try optimisedVideo!.path.move(to: video.path, force: true)
-                optimisedVideo = optimisedVideo?.copyWithPath(path)
-            }
-        } catch let ClopProcError.processError(proc) {
-            if proc.terminated {
-                log.debug("Process terminated by us: \(proc.commandLine)")
-            } else {
-                log.error("Error downscaling video \(pathString): \(proc.commandLine)\nOUT: \(proc.out)\nERR: \(proc.err)")
-                mainActor {
-                    optimiser.finish(error: "Downscaling failed")
-                }
-            }
-        } catch ClopError.imageSizeLarger, ClopError.videoSizeLarger, ClopError.pdfSizeLarger {
-            optimisedVideo = video
-            mainActor { optimiser.info = "File already fully compressed" }
-        } catch let error as ClopError {
-            log.error("Error downscaling video \(pathString): \(error.description)")
-            mainActor { optimiser.finish(error: error.humanDescription) }
-        } catch {
-            log.error("Error downscaling video \(pathString): \(error)")
-            mainActor { optimiser.finish(error: "Optimisation failed") }
-        }
-
-        guard let optimisedVideo else { return }
-        mainActor {
-            optimiser.url = optimisedVideo.path.url
-            if !hideFloatingResult {
-                OM.current = optimiser
-            }
-            optimiser.finish(oldBytes: fileSize, newBytes: optimisedVideo.fileSize, removeAfterMs: hideFilesAfter)
-            result = optimisedVideo
-            if copyToClipboard {
-                optimiser.copyToClipboard()
-            }
-        }
-    }
-    videoOptimiseDebouncers[pathString] = workItem
-
-    while !done, !workItem.isCancelled {
-        try await Task.sleep(nanoseconds: 100_000_000)
-    }
-
-    return result
 }

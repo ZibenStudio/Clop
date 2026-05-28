@@ -1,13 +1,13 @@
 <p align="center">
-    <a href="https://github.com/ZibenStudio/Clop/releases/latest"><img width="128" height="128" src="Clop/Assets.xcassets/clop.imageset/clop_256.png" style="filter: drop-shadow(0px 2px 4px rgba(80, 50, 6, 0.2));"></a>
-    <h1 align="center"><code style="text-shadow: 0px 3px 10px rgba(8, 0, 6, 0.35); font-size: 3rem; font-family: ui-monospace, Menlo, monospace; font-weight: 800; background: transparent; color: #4d3e56; padding: 0.2rem 0.2rem; border-radius: 6px">Clop Ziben</code></h1>
+    <a href="https://lowtechguys.com/clop"><img width="128" height="128" src="Clop/Assets.xcassets/clop.imageset/clop_256.png" style="filter: drop-shadow(0px 2px 4px rgba(80, 50, 6, 0.2));"></a>
+    <h1 align="center"><code style="text-shadow: 0px 3px 10px rgba(8, 0, 6, 0.35); font-size: 3rem; font-family: ui-monospace, Menlo, monospace; font-weight: 800; background: transparent; color: #4d3e56; padding: 0.2rem 0.2rem; border-radius: 6px">Clop</code></h1>
     <h4 align="center" style="padding: 0; margin: 0; font-family: ui-monospace, monospace;">Image, video, PDF and clipboard optimiser</h4>
-    <h6 align="center" style="padding: 0; margin: 0; font-family: ui-monospace, monospace; font-weight: 400;">Custom fork with auto-optimization presets</h6>
+    <h6 align="center" style="padding: 0; margin: 0; font-family: ui-monospace, monospace; font-weight: 400;">Copy large, paste small, send fast</h6>
 </p>
 
 <p align="center">
-    <a href="https://github.com/ZibenStudio/Clop/releases/latest">
-        Download latest release
+    <a href="https://files.lowtechguys.com/releases/Clop.dmg">
+        <img width=200 src="https://files.lowtechguys.com/macos-app.svg">
     </a>
 </p>
 
@@ -79,40 +79,6 @@ After the **14-day trial**, the app will continue to work with the free features
 | On-demand optimisation | ✅ | 5 per session |
 | Shortcuts support | ✅ | 5 per session |
 
-
-## Ziben Custom Features
-
-This fork adds automatic optimization presets for clipboard images and videos.
-
-### Image Presets
-
-| Preset | Resolution max | Format | Quality | Usage |
-|--------|---------------|--------|---------|-------|
-| **Chat** (default) | 1920x1080 | WebP | 60 | Discord, Teams, Claude Code |
-| **Web** | 2560x1440 | WebP | 80 | Sites web, Odoo, contenu public |
-| **Compact** | 1280x720 | WebP | 50 | Email, threads longs |
-| **Quality** | No resize | WebP | 90 | Préserver le détail |
-
-### Video Presets
-
-| Preset | Resolution max | FPS | Codec | Quality | Audio | Usage |
-|--------|---------------|-----|-------|---------|-------|-------|
-| **Web** (default) | 2560x1440 | 30 | H.265 | 55 | AAC 128k | Présentations, partage |
-| **Screencast** | 1920x1080 | 30 | H.265 | 50 | Strip | Démos, tutos, UI |
-| **Compact** | 1280x720 | 30 | H.265 | 65 | Strip | Email, messaging |
-| **Quality** | No resize | 60 | H.264 | 40 | Copy | Préserver l'original |
-
-### Changing presets
-
-```bash
-# Image presets: chat (default), web, compact, quality
-defaults write com.ziben.Clop activeImagePreset -string "web"
-
-# Video presets: web (default), screencast, compact, quality
-defaults write com.ziben.Clop activeVideoPreset -string "screencast"
-```
-
-Restart Clop after changing a preset.
 
 ## Technical details
 

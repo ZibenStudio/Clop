@@ -8,7 +8,11 @@
 import Defaults
 import Foundation
 import Lowtech
+import os
 import SwiftUI
+import System
+
+private let log = Logger(subsystem: LOG_SUBSYSTEM, category: "RightClickMenu")
 
 extension Bundle {
     var lowercasedName: String {
@@ -49,6 +53,7 @@ struct OpenWithMenuView: View {
 
 struct RightClickMenuView: View {
     @ObservedObject var optimiser: Optimiser
+    @ObservedObject var wdm = WDM
 
     var body: some View {
         Button(optimiser.running ? "Stop" : "Dismiss") {
@@ -100,11 +105,13 @@ struct RightClickMenuView: View {
         }
         .keyboardShortcut(" ")
 
-        Button("Compare (diff)") {
-            optimiser.compare()
+        if !optimiser.type.isAudio {
+            Button("Compare (diff)") {
+                optimiser.compare()
+            }
+            .disabled(optimiser.url == nil || optimiser.comparisonOriginalURL == nil)
+            .keyboardShortcut("d")
         }
-        .disabled(optimiser.url == nil || optimiser.comparisonOriginalURL == nil)
-        .keyboardShortcut("d")
 
         if !optimiser.running {
             if optimiser.canDownscale() ||
@@ -115,10 +122,16 @@ struct RightClickMenuView: View {
                 Divider()
             }
             if optimiser.canDownscale() {
-                Menu("Downscale") {
-                    DownscaleMenu(optimiser: optimiser)
+                if optimiser.type.isAudio, optimiser.type.utType != .wav {
+                    Menu("Change bitrate") {
+                        LowerBitrateMenu(optimiser: optimiser)
+                    }
+                } else if !optimiser.type.isAudio {
+                    Menu("Downscale") {
+                        DownscaleMenu(optimiser: optimiser)
+                    }
+                    .disabled(optimiser.downscaleFactor <= 0.1)
                 }
-                .disabled(optimiser.downscaleFactor <= 0.1)
             }
 
             if optimiser.canChangePlaybackSpeed() {
@@ -138,43 +151,87 @@ struct RightClickMenuView: View {
             }
 
             if optimiser.canReoptimise() {
-                Button("Re-optimise") {
-                    optimiser.reoptimise()
-                }
-                Button("Aggressive optimisation") {
-                    if optimiser.downscaleFactor < 1 {
-                        optimiser.downscale(toFactor: optimiser.downscaleFactor, aggressiveOptimisation: true)
-                    } else {
-                        optimiser.optimise(allowLarger: false, aggressiveOptimisation: true, fromOriginal: true)
+                if optimiser.type.isVideo {
+                    Menu("Re-optimise with encoder") {
+                        ReoptimiseWithEncoderMenu(optimiser: optimiser)
                     }
+                } else {
+                    Button("Re-optimise") {
+                        optimiser.reoptimise()
+                    }
+                    Button("Aggressive optimisation") {
+                        if optimiser.downscaleFactor < 1 {
+                            optimiser.downscale(toFactor: optimiser.downscaleFactor, aggressiveOptimisation: true)
+                        } else {
+                            optimiser.optimise(allowLarger: false, aggressiveOptimisation: true, fromOriginal: true)
+                        }
+                    }
+                    .keyboardShortcut("a")
+                    .disabled(optimiser.aggressive)
                 }
-                .keyboardShortcut("a")
-                .disabled(optimiser.aggressive)
             }
 
             Divider()
 
+            if let session = wdm.session(forOptimiser: optimiser) {
+                Button("Copy send link") {
+                    session.copyLink()
+                    optimiser.overlayMessage = "Copied link"
+                }
+                .keyboardShortcut("w")
+            } else {
+                Button("Send file securely") {
+                    warpDropSend(optimiser: optimiser)
+                }
+                .keyboardShortcut("w")
+            }
             Button("Upload with Dropshare") {
                 DROPSHARE.open(optimiser: optimiser)
             }
             .keyboardShortcut("u")
-            Button("Add to Dropover") {
-                DROPOVER.open(optimiser: optimiser)
-            }
-            Button("Add to Yoink") {
-                YOINK.open(optimiser: optimiser)
-            }
-            .keyboardShortcut("y")
-            Button("Add to Dockside") {
-                DOCKSIDE.open(optimiser: optimiser)
+            Menu("Add to shelf\u{2026}") {
+                Button("Add to Yoink") {
+                    YOINK.open(optimiser: optimiser)
+                }
+                Button("Add to Dockside") {
+                    DOCKSIDE.open(optimiser: optimiser)
+                }
+                Button("Add to Dropover") {
+                    DROPOVER.open(optimiser: optimiser)
+                }
+                Button("Add to Atoll") {
+                    ATOLL.open(optimiser: optimiser)
+                }
             }
 
             Divider()
 
-            if !optimiser.type.isPDF {
+            if !optimiser.type.isPDF, !optimiser.type.isAudio {
                 Button("Strip EXIF metadata") {
                     optimiser.path?.stripExif()
                     optimiser.overlayMessage = "Stripped"
+                }
+            }
+
+            if optimiser.type.isPDF, let pdf = optimiser.pdf, pdf.pageCount > 0 {
+                if pdf.pageCount == 1 {
+                    Menu("Convert to image") {
+                        Section("Best for photos and illustrations") {
+                            Button("JPEG") { convertSinglePagePDFToImage(optimiser: optimiser, pdf: pdf, format: .jpeg) }
+                        }
+                        Section("Best for text and low-detail images") {
+                            Button("PNG") { convertSinglePagePDFToImage(optimiser: optimiser, pdf: pdf, format: .png) }
+                        }
+                    }
+                } else {
+                    Menu("Extract pages as images") {
+                        Section("Best for photos and illustrations") {
+                            Button("JPEG") { extractPDFPagesAsImages(optimiser: optimiser, pdf: pdf, format: .jpeg) }
+                        }
+                        Section("Best for text and low-detail images") {
+                            Button("PNG") { extractPDFPagesAsImages(optimiser: optimiser, pdf: pdf, format: .png) }
+                        }
+                    }
                 }
             }
 
@@ -184,7 +241,10 @@ struct RightClickMenuView: View {
                 }
             }
 
-            Menu("Run workflow") {
+            Menu("Run pipeline") {
+                RunPipelineMenu(optimiser: optimiser)
+            }
+            Menu("Run Shortcut") {
                 WorkflowMenu(optimiser: optimiser)
             }
         }
@@ -205,6 +265,7 @@ struct ConvertMenu: View {
 
 struct BatchRightClickMenuView: View {
     @ObservedObject var sm = SM
+    @ObservedObject var wdm = WDM
 
     var body: some View {
         let optimisers = sm.optimisers
@@ -232,10 +293,17 @@ struct BatchRightClickMenuView: View {
         }
 
         Divider()
-        Menu("Downscale") {
-            BatchDownscaleMenu(optimisers: optimisers)
+        if optimisers.contains(where: { !$0.type.isAudio }) {
+            Menu("Downscale") {
+                BatchDownscaleMenu(optimisers: optimisers.filter { !$0.type.isAudio })
+            }
+            .disabled(optimisers.filter { !$0.type.isAudio }.allSatisfy { $0.downscaleFactor <= 0.1 })
         }
-        .disabled(optimisers.allSatisfy { $0.downscaleFactor <= 0.1 })
+        if optimisers.contains(where: { $0.type.isAudio && $0.type.utType != .wav }) {
+            Menu("Change bitrate") {
+                BatchBitrateMenu(optimisers: optimisers.filter { $0.type.isAudio && $0.type.utType != .wav })
+            }
+        }
 
         if optimisers.allSatisfy({ $0.canChangePlaybackSpeed() }) {
             Menu("Change playback speed") {
@@ -258,21 +326,41 @@ struct BatchRightClickMenuView: View {
 
         Divider()
 
+        if sm.optimisers.allSatisfy({ wdm.session(forOptimiser: $0) != nil }) {
+            Button("Copy all send links") {
+                let links = sm.optimisers.compactMap { wdm.session(forOptimiser: $0)?.shareURL }
+                let pb = NSPasteboard.general
+                pb.clearContents()
+                pb.setString(links.joined(separator: "\n"), forType: .string)
+                sm.selection = []
+            }
+        } else {
+            Button("Send files securely") {
+                warpDropSend(optimisers: sm.optimisers)
+                sm.selection = []
+            }
+        }
         Button("Upload with Dropshare") {
             DROPSHARE.open(optimisers: sm.optimisers)
             sm.selection = []
         }
-        Button("Add to Dropover") {
-            DROPOVER.open(optimisers: sm.optimisers)
-            sm.selection = []
-        }
-        Button("Add to Yoink") {
-            YOINK.open(optimisers: sm.optimisers)
-            sm.selection = []
-        }
-        Button("Add to Dockside") {
-            DOCKSIDE.open(optimisers: sm.optimisers)
-            sm.selection = []
+        Menu("Add to shelf\u{2026}") {
+            Button("Add to Yoink") {
+                YOINK.open(optimisers: sm.optimisers)
+                sm.selection = []
+            }
+            Button("Add to Dockside") {
+                DOCKSIDE.open(optimisers: sm.optimisers)
+                sm.selection = []
+            }
+            Button("Add to Dropover") {
+                DROPOVER.open(optimisers: sm.optimisers)
+                sm.selection = []
+            }
+            Button("Add to Atoll") {
+                ATOLL.open(optimisers: sm.optimisers)
+                sm.selection = []
+            }
         }
 
         Divider()
@@ -283,57 +371,69 @@ struct BatchRightClickMenuView: View {
             }
             sm.selection = []
         }
-        .disabled(optimisers.allSatisfy(\.type.isPDF))
+        .disabled(optimisers.allSatisfy { $0.type.isPDF || $0.type.isAudio })
     }
 }
 
-struct ShortcutChoiceMenu: View {
-    @ObservedObject var shortcutsManager = SHM
-    @Environment(\.preview) var preview
+struct RunPipelineMenu: View {
+    @ObservedObject var optimiser: Optimiser
 
-    var onShortcutChosen: ((Shortcut) -> Void)? = nil
+    @Default(.savedPipelines) var savedPipelines
+
+    var fileType: ClopFileType? {
+        switch optimiser.type {
+        case .image: .image
+        case .video: .video
+        case .audio: .audio
+        case .pdf: .pdf
+        default: nil
+        }
+    }
+
+    var applicablePipelines: [Pipeline] {
+        savedPipelines.filter { pipeline in
+            guard let name = pipeline.name, !name.isEmpty else { return false }
+            return pipeline.fileType == nil || pipeline.fileType == fileType
+        }
+    }
 
     var body: some View {
-        if let shortcutsMap = shortcutsManager.shortcutsMap {
-            if shortcutsMap.isEmpty {
-                Text("Create a Shortcut in the Clop folder to have it appear here").disabled(true)
-            } else {
-                if let clopShortcuts = shortcutsMap["Clop"] {
-                    shortcutList(clopShortcuts)
-                } else {
-                    Text("Create a Shortcut in the Clop folder to have it appear here").disabled(true)
-                    let shorts = shortcutsMap.sorted { $0.key < $1.key }
-
-                    ForEach(shorts, id: \.key) { folder, shortcuts in
-                        Section(folder) { shortcutList(shortcuts) }
-                    }
-
-                }
-            }
+        if applicablePipelines.isEmpty {
+            Text("No saved pipelines")
+            Text("Save a pipeline in Settings > Automation")
         } else {
-            Text("Loading...")
-                .disabled(true)
-                .onAppear {
-                    guard !preview else { return }
-                    shortcutsManager.fetch()
+            ForEach(applicablePipelines) { pipeline in
+                Button(pipeline.name ?? pipeline.id) {
+                    runPipeline(pipeline)
                 }
-        }
-    }
-
-    @ViewBuilder func shortcutList(_ shortcuts: [Shortcut]) -> some View {
-        if let onShortcutChosen {
-            ForEach(shortcuts) { shortcut in
-                Button(shortcut.name) { onShortcutChosen(shortcut) }
-            }
-        } else {
-            ForEach(shortcuts) { shortcut in
-                Text(shortcut.name).tag(shortcut as Shortcut?)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
             }
         }
     }
 
+    func runPipeline(_ pipeline: Pipeline) {
+        guard let url = optimiser.url, let path = url.existingFilePath, let fileType else { return }
+
+        // Replace the temp pipeline with this pipeline's steps
+        optimiser.tempPipeline = pipeline.resolved.steps.filter { !$0.isFilter }
+        optimiser.automationPipeline = pipeline
+
+        Task { @MainActor in
+            optimiser.running = true
+            optimiser.operation = "Pipeline: \(pipeline.name ?? "unnamed")"
+            do {
+                let (resultFile, _) = try await executePipeline(
+                    pipeline, file: path,
+                    source: optimiser.source ?? .cli,
+                    optimiser: optimiser,
+                    fileType: fileType
+                )
+                optimiser.url = resultFile.url
+                optimiser.finish(oldBytes: optimiser.oldBytes, newBytes: resultFile.fileSize() ?? optimiser.newBytes, oldSize: optimiser.oldSize)
+            } catch {
+                optimiser.finish(error: "Pipeline failed: \(error.localizedDescription)")
+            }
+        }
+    }
 }
 
 struct WorkflowMenu: View {
@@ -342,6 +442,9 @@ struct WorkflowMenu: View {
 
     var body: some View {
         ShortcutChoiceMenu { shortcut in
+            // Track in temp pipeline
+            optimiser.tempPipeline.append(.runShortcut(shortcut))
+
             switch optimiser.type {
             case .image:
                 processImage(shortcut: shortcut)
@@ -351,18 +454,6 @@ struct WorkflowMenu: View {
                 processPDF(shortcut: shortcut)
             default:
                 break
-            }
-        }
-        .onChange(of: shortcutsManager.cacheIsValid) { cacheIsValid in
-            if !cacheIsValid, OM.optimisers.contains(optimiser) {
-                log.debug("Re-fetching Shortcuts from WorkflowMenu.onChange")
-                shortcutsManager.fetch()
-            }
-        }
-        .onAppear {
-            if !shortcutsManager.cacheIsValid {
-                log.debug("Re-fetching Shortcuts from WorkflowMenu.onAppear")
-                shortcutsManager.fetch()
             }
         }
     }
@@ -390,7 +481,7 @@ struct WorkflowMenu: View {
             guard let video = optimiser.video else {
                 return
             }
-            if let newVideo = try? video.runThroughShortcut(shortcut: shortcut, optimiser: optimiser, allowLarger: false, aggressiveOptimisation: Defaults[.useAggressiveOptimisationMP4], source: optimiser.source) {
+            if let newVideo = try? video.runThroughShortcut(shortcut: shortcut, optimiser: optimiser, allowLarger: false, aggressiveOptimisation: Defaults[.videoEncoder] == .slowHighQuality, source: optimiser.source) {
                 mainActor {
                     optimiser.url = newVideo.path.url
                     optimiser.finish(oldBytes: optimiser.oldBytes, newBytes: newVideo.path.fileSize() ?? optimiser.newBytes, oldSize: optimiser.oldSize, newSize: newVideo.size)
@@ -439,6 +530,40 @@ struct DownscaleMenu: View {
                     optimiser.downscale(toFactor: factor)
                 }.disabled(factor == optimiser.downscaleFactor)
             }
+        }
+    }
+}
+
+struct LowerBitrateMenu: View {
+    @ObservedObject var optimiser: Optimiser
+
+    var body: some View {
+        let format = Defaults[.audioFormat]
+        let bitrates = format.allowedBitrates
+        let currentBitrate = optimiser.audioBitrateOverride ?? Defaults[.audioBitrate]
+
+        ForEach(bitrates, id: \.self) { bitrate in
+            Button("\(bitrate) kbps") {
+                optimiser.lowerBitrate(to: bitrate)
+            }.disabled(bitrate == currentBitrate)
+        }
+    }
+}
+
+struct BatchBitrateMenu: View {
+    var optimisers: [Optimiser]
+
+    var body: some View {
+        let format = Defaults[.audioFormat]
+        let bitrates = format.allowedBitrates
+
+        ForEach(bitrates, id: \.self) { bitrate in
+            Button("\(bitrate) kbps") {
+                for optimiser in optimisers {
+                    optimiser.lowerBitrate(to: bitrate)
+                }
+                SM.selection = []
+            }.disabled(optimisers.allSatisfy { ($0.audioBitrateOverride ?? Defaults[.audioBitrate]) == bitrate })
         }
     }
 }
@@ -515,6 +640,124 @@ struct ConvertToGIFMenu: View {
         }
     }
 
+}
+
+@MainActor func convertSinglePagePDFToImage(optimiser: Optimiser, pdf: PDF, format: NSBitmapImageRep.FileType) {
+    let ext = format == .png ? "png" : "jpg"
+    guard let imageData = pdf.renderPage(pageIndex: 0, format: format) else {
+        optimiser.overlayMessage = "Render failed"
+        return
+    }
+
+    let stem = pdf.path.lastComponent?.stem ?? "page"
+    let outputPath = FilePath.images.appending("\(stem).\(ext)")
+    let fm = FileManager.default
+    try? fm.createDirectory(atPath: FilePath.images.string, withIntermediateDirectories: true)
+
+    guard fm.createFile(atPath: outputPath.string, contents: imageData) else {
+        optimiser.overlayMessage = "Save failed"
+        return
+    }
+
+    let id = "pdf-to-image-\(Int(Date().timeIntervalSince1970))"
+    guard let img = Image(path: outputPath, retinaDownscaled: false) else {
+        optimiser.overlayMessage = "Convert failed"
+        return
+    }
+    Task {
+        try? await runImagePipeline(img, actions: [.optimise], id: id, allowLarger: true, hideFloatingResult: false, source: optimiser.source)
+    }
+}
+
+@MainActor func extractPDFPagesAsImages(optimiser: Optimiser, pdf: PDF, format: NSBitmapImageRep.FileType) {
+    let ext = format == .png ? "png" : "jpg"
+    let formatName = format == .png ? "PNGs" : "JPEGs"
+    let panel = NSOpenPanel()
+    panel.canChooseFiles = false
+    panel.canChooseDirectories = true
+    panel.canCreateDirectories = true
+    panel.allowsMultipleSelection = false
+    panel.prompt = "Save Pages"
+    panel.message = "Choose a folder to save \(pdf.pageCount) pages as optimised \(formatName)"
+    panel.level = .modalPanel
+    NSApp.activate(ignoringOtherApps: true)
+
+    panel.begin { response in
+        guard response == .OK, let folderURL = panel.url else { return }
+
+        let stem = pdf.path.lastComponent?.stem ?? "page"
+        let pageCount = pdf.pageCount
+        let fm = FileManager.default
+        let originalOldBytes = optimiser.oldBytes
+
+        mainActor {
+            optimiser.running = true
+            optimiser.progress = Progress(totalUnitCount: Int64(pageCount))
+            optimiser.progress.completedUnitCount = 0
+            optimiser.operation = "Saving pages"
+        }
+
+        let batchSize = ProcessInfo.processInfo.activeProcessorCount
+
+        DispatchQueue.global().async {
+            var totalSavedBytes = 0
+            let lock = NSLock()
+
+            for batchStart in stride(from: 0, to: pageCount, by: batchSize) {
+                let batchEnd = min(batchStart + batchSize, pageCount)
+                let group = DispatchGroup()
+                for i in batchStart ..< batchEnd {
+                    group.enter()
+                    DispatchQueue.global().async {
+                        defer {
+                            mainActor { optimiser.progress.completedUnitCount += 1 }
+                            group.leave()
+                        }
+
+                        guard let imageData = pdf.renderPage(pageIndex: i, format: format) else { return }
+
+                        let filename = "\(stem)-page\(i + 1).\(ext)"
+                        let outputURL = folderURL.appendingPathComponent(filename)
+                        fm.createFile(atPath: outputURL.path, contents: imageData)
+
+                        let outputPath = FilePath(outputURL.path)
+                        var bytes = imageData.count
+                        if let img = Image(path: outputPath, retinaDownscaled: false) {
+                            let optimised = try? img.optimise(optimiser: optimiser, allowLarger: true, aggressiveOptimisation: img.type.aggressiveOptimisation, adaptiveSize: false)
+                            if let optimised, let newPath = try? optimised.path.copy(to: outputPath, force: true) {
+                                bytes = newPath.fileSize() ?? bytes
+                            } else {
+                                bytes = outputPath.fileSize() ?? bytes
+                            }
+                        }
+
+                        lock.lock()
+                        totalSavedBytes += bytes
+                        lock.unlock()
+                    }
+                }
+                group.wait()
+            }
+
+            mainActor {
+                optimiser.finish(oldBytes: originalOldBytes, newBytes: totalSavedBytes)
+                optimiser.overlayMessage = "Saved \(pageCount) pages"
+                NSWorkspace.shared.open(folderURL)
+            }
+        }
+    }
+}
+
+struct ReoptimiseWithEncoderMenu: View {
+    @ObservedObject var optimiser: Optimiser
+
+    var body: some View {
+        ForEach(VideoEncoder.allCases, id: \.self) { encoder in
+            Button("\(encoder.name)") {
+                optimiser.reoptimiseWithEncoder(encoder)
+            }
+        }
+    }
 }
 
 struct ChangePlaybackSpeedMenu: View {
