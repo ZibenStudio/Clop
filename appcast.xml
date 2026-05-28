@@ -3,6 +3,37 @@
     <channel>
         <title>Clop Ziben</title>
         <item>
+            <title>Clop Ziben v4.0.0</title>
+            <pubDate>Thu, 28 May 2026 10:00:00 +0200</pubDate>
+            <sparkle:version>4.0.0</sparkle:version>
+            <sparkle:shortVersionString>4.0.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <description><![CDATA[
+                <h2>Clop Ziben v4.0.0</h2>
+                <p>Major upgrade: rebased on upstream Clop v3 architecture.</p>
+                <h3>New from upstream v3</h3>
+                <ul>
+                    <li>Pipeline DSL: chain optimise / downscale / convert / crop as text steps, save and reuse pipelines</li>
+                    <li>PresetZones: configurable drop targets per file type</li>
+                    <li>Audio optimisation (mp3 / flac / aac / opus)</li>
+                    <li>AV1 and WebM video encoders, glass UI on macOS 26</li>
+                    <li>PDF DPI control (sliders + adaptive), parallel PDF optimisation</li>
+                    <li>Per-app clipboard ignore, file name templates</li>
+                    <li>Sidebar settings UI, per-folder floating result toggle</li>
+                    <li>Per-id pipeline serialization, per-file-type ignore rules</li>
+                </ul>
+                <h3>Ziben fork</h3>
+                <ul>
+                    <li>Full Pro unlock: no 5-file limit, no paywall UI, drag-and-drop unlimited</li>
+                    <li>WarpDrop file sharing disabled (depends on a private package)</li>
+                </ul>
+            ]]></description>
+            <enclosure url="https://github.com/ZibenStudio/Clop/releases/download/v4.0.0/Clop-Ziben-4.0.0.dmg"
+                       type="application/octet-stream"
+                       sparkle:edSignature="W3yV6u0p6kUQx99vyfeqTIPF8hUy69qLD4WBvoPezET9Wy+xyOXfw0CRDPlyFLzgjcoq3SroW9qRfuhhSOEeCw=="
+                       length="96105185"/>
+        </item>
+        <item>
             <title>Clop Ziben v3.0.5</title>
             <pubDate>Wed, 19 Mar 2026 19:00:00 +0100</pubDate>
             <sparkle:version>3.0.5</sparkle:version>
