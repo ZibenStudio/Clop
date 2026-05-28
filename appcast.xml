@@ -3,6 +3,30 @@
     <channel>
         <title>Clop Ziben</title>
         <item>
+            <title>Clop Ziben v4.1.0</title>
+            <pubDate>Thu, 28 May 2026 13:00:00 +0200</pubDate>
+            <sparkle:version>4.1.0</sparkle:version>
+            <sparkle:shortVersionString>4.1.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <description><![CDATA[
+                <h2>Clop Ziben v4.1.0</h2>
+                <ul>
+                    <li>Feat: restored Ziben image + video presets (Web default) with menubar selector</li>
+                    <li>Feat: pre-seeded PresetZones (8 drop targets) for ctrl-drag</li>
+                    <li>Perf: single source of truth — same Pipelines power menubar + drop zones</li>
+                    <li>Perf: cwebp uses active preset quality, -preset icon, -mt multithread</li>
+                    <li>Perf: HEVC -q:v driven by active video preset quality</li>
+                    <li>Perf: resize skips intermediate pngquant when WebP convert follows (2 passes vs 3)</li>
+                    <li>Fix: "Unknown image type" after WebP convert (optimise() now handles WebP/AVIF/HEIC)</li>
+                    <li>Fix: "Resizing to WxH" overlay lingering — now reuses main pipeline optimiser id</li>
+                </ul>
+            ]]></description>
+            <enclosure url="https://github.com/ZibenStudio/Clop/releases/download/v4.1.0/Clop-Ziben-4.1.0.dmg"
+                       type="application/octet-stream"
+                       sparkle:edSignature="1+kz3UDxe6l9I5byiw+ROqN+zF2hX0OWc8N0zKex0EVUXU74TsdTHdHD+TrEXi7m0EJbFtxcEf+I7xGR9iK8AQ=="
+                       length="96122392"/>
+        </item>
+        <item>
             <title>Clop Ziben v4.0.0</title>
             <pubDate>Thu, 28 May 2026 10:00:00 +0200</pubDate>
             <sparkle:version>4.0.0</sparkle:version>
