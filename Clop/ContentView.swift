@@ -31,6 +31,8 @@ struct MenuView: View {
     @Default(.cliInstalled) var cliInstalled
     @Default(.pauseAutomaticOptimisations) var pauseAutomaticOptimisations
     @Default(.allowClopToAppearInScreenshots) var allowClopToAppearInScreenshots
+    @Default(.activeImagePreset) var activeImagePreset
+    @Default(.activeVideoPreset) var activeVideoPreset
     @Default(.clipboardIgnoredAppBundleIds) var clipboardIgnoredAppBundleIds
 
     @State var cliInstallResult: String?
@@ -81,6 +83,27 @@ struct MenuView: View {
                         }
                     }
                 ))
+            }
+        }
+
+        Section("Presets") {
+            Menu("Image: \(IMAGE_PRESETS[activeImagePreset]?.name ?? "Web")") {
+                ForEach(["web", "chat", "compact", "quality"], id: \.self) { key in
+                    if let preset = IMAGE_PRESETS[key] {
+                        Button(activeImagePreset == key ? "\(preset.name) ✓" : preset.name) {
+                            activeImagePreset = key
+                        }
+                    }
+                }
+            }
+            Menu("Video: \(VIDEO_PRESETS[activeVideoPreset]?.name ?? "Web")") {
+                ForEach(["web", "screencast", "compact", "quality"], id: \.self) { key in
+                    if let preset = VIDEO_PRESETS[key] {
+                        Button(activeVideoPreset == key ? "\(preset.name) ✓" : preset.name) {
+                            activeVideoPreset = key
+                        }
+                    }
+                }
             }
         }
 

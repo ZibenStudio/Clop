@@ -188,11 +188,93 @@ extension Defaults.Keys {
 
     static let savedCropSizes = Key<[CropSize]>("savedCropSizes", default: DEFAULT_CROP_SIZES)
     static let pauseAutomaticOptimisations = Key<Bool>("pauseAutomaticOptimisations", default: false)
-    static let presetZones = Key<[PresetZone]>("presetZones", default: [])
+    static let presetZones = Key<[PresetZone]>("presetZones", default: ZIBEN_PRESET_ZONES)
+
+    // Ziben custom: preset-driven clipboard automation (perf-preserving single cwebp/ffmpeg pass)
+    static let activeImagePreset = Key<String>("activeImagePreset", default: "web")
+    static let activeVideoPreset = Key<String>("activeVideoPreset", default: "web")
+    static let autoResizeClipboardImages = Key<Bool>("autoResizeClipboardImages", default: true)
+    static let autoConvertClipboardToWebP = Key<Bool>("autoConvertClipboardToWebP", default: true)
+    static let autoResizeClipboardVideos = Key<Bool>("autoResizeClipboardVideos", default: true)
+    static let autoForceHEVCClipboardVideos = Key<Bool>("autoForceHEVCClipboardVideos", default: true)
 
     static let syncSettingsCloud = Key<Bool>("syncSettingsCloud", default: true)
     static let allowClopToAppearInScreenshots = Key<Bool>("allowClopToAppearInScreenshots", default: false)
 }
+
+// MARK: - Ziben presets
+
+/// Ziben image preset: max resolution + cwebp quality. `maxWidth == 0` means no resize.
+struct ImagePreset {
+    let name: String
+    let maxWidth: Int
+    let maxHeight: Int
+    let quality: Int        // cwebp -q (0-100, higher = better)
+    let convertToWebP: Bool
+}
+
+let IMAGE_PRESETS: [String: ImagePreset] = [
+    "web": ImagePreset(name: "Web", maxWidth: 2560, maxHeight: 1440, quality: 80, convertToWebP: true),
+    "chat": ImagePreset(name: "Chat", maxWidth: 1920, maxHeight: 1080, quality: 60, convertToWebP: true),
+    "compact": ImagePreset(name: "Compact", maxWidth: 1280, maxHeight: 720, quality: 50, convertToWebP: true),
+    "quality": ImagePreset(name: "Quality", maxWidth: 0, maxHeight: 0, quality: 90, convertToWebP: true),
+]
+
+/// Ziben video preset: max resolution + HEVC quality. `maxWidth == 0` means no resize.
+struct VideoPreset {
+    let name: String
+    let maxWidth: Int
+    let maxHeight: Int
+    let fpsCap: Int
+    let useHEVC: Bool
+    let quality: Int        // VideoToolbox -q:v (lower = better)
+    let stripAudio: Bool
+}
+
+/// FFmpeg args for HEVC (hevc_videotoolbox) using the active Ziben video preset's quality.
+@inline(__always) func zibenHEVCArgs() -> [String] {
+    let q = VIDEO_PRESETS[Defaults[.activeVideoPreset]]?.quality ?? 40
+    return ["-vcodec", "hevc_videotoolbox", "-q:v", "\(q)", "-tag:v", "hvc1"]
+}
+
+let VIDEO_PRESETS: [String: VideoPreset] = [
+    "web": VideoPreset(name: "Web", maxWidth: 2560, maxHeight: 1440, fpsCap: 30, useHEVC: true, quality: 55, stripAudio: false),
+    "screencast": VideoPreset(name: "Screencast", maxWidth: 1920, maxHeight: 1080, fpsCap: 30, useHEVC: true, quality: 50, stripAudio: true),
+    "compact": VideoPreset(name: "Compact", maxWidth: 1280, maxHeight: 720, fpsCap: 30, useHEVC: true, quality: 65, stripAudio: true),
+    "quality": VideoPreset(name: "Quality", maxWidth: 0, maxHeight: 0, fpsCap: 60, useHEVC: false, quality: 40, stripAudio: false),
+]
+
+/// Default v3 PresetZones (drag-drop targets) populated with the 4 image + 4 video Ziben pipelines.
+/// Drop targets use v3 stepwise pipeline (acceptable perf for explicit drops). Menubar / clipboard
+/// auto uses a perf-preserving single-pass hook in runImagePipeline / runVideoPipeline.
+let ZIBEN_PRESET_ZONES: [PresetZone] = {
+    func imageZone(name: String, icon: String, longEdge: Int?) -> PresetZone {
+        var steps: [PipelineStep] = []
+        if let longEdge {
+            steps.append(.crop(longEdge: longEdge))
+        }
+        steps.append(.convert(to: "webp"))
+        return PresetZone(name: name, icon: icon, type: .image, pipeline: Pipeline(steps: steps))
+    }
+    func videoZone(name: String, icon: String, longEdge: Int?) -> PresetZone {
+        var steps: [PipelineStep] = []
+        if let longEdge {
+            steps.append(.crop(longEdge: longEdge))
+        }
+        steps.append(.convert(to: "hevc"))
+        return PresetZone(name: name, icon: icon, type: .video, pipeline: Pipeline(steps: steps))
+    }
+    return [
+        imageZone(name: "Web", icon: "globe", longEdge: 2560),
+        imageZone(name: "Chat", icon: "bubble.left", longEdge: 1920),
+        imageZone(name: "Compact", icon: "minus.magnifyingglass", longEdge: 1280),
+        imageZone(name: "Quality", icon: "sparkles", longEdge: nil),
+        videoZone(name: "Web", icon: "globe", longEdge: 2560),
+        videoZone(name: "Screencast", icon: "rectangle.on.rectangle", longEdge: 1920),
+        videoZone(name: "Compact", icon: "minus.magnifyingglass", longEdge: 1280),
+        videoZone(name: "Quality", icon: "sparkles", longEdge: nil),
+    ]
+}()
 
 let DEFAULT_CROP_SIZES: [CropSize] = [
     CropSize(width: 1920, height: 1080, name: "1080p"),

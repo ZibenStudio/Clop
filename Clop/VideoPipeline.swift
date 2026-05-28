@@ -34,6 +34,37 @@ private let log = Logger(subsystem: LOG_SUBSYSTEM, category: "VideoPipeline")
     let pathString = path.string
     let itemType = ItemType.from(filePath: path)
 
+    // MARK: - Ziben video preset hook (auto sources)
+    // Apply active Ziben video preset on auto sources: force HEVC at preset quality
+    // and inject a downscale action if the video exceeds the preset's max resolution.
+    var actions = actions
+    var ffmpegEncoderOverride = ffmpegEncoderOverride
+    var outputExtension = outputExtension
+    let zibenVideoPreset: VideoPreset? = {
+        guard let source, !actions.contains(where: \.isConvert), !actions.contains(where: \.isDownscale) else { return nil }
+        let isAuto: Bool = switch source {
+        case .clipboard, .fileWatcher, .photos, .openWith, .finder, .service: true
+        case .dir: true
+        default: false
+        }
+        guard isAuto else { return nil }
+        return VIDEO_PRESETS[Defaults[.activeVideoPreset]]
+    }()
+    if let preset = zibenVideoPreset {
+        if preset.useHEVC, Defaults[.autoForceHEVCClipboardVideos], ffmpegEncoderOverride == nil {
+            ffmpegEncoderOverride = zibenHEVCArgs()
+            if outputExtension == nil { outputExtension = "mp4" }
+        }
+        if Defaults[.autoResizeClipboardVideos], preset.maxWidth > 0, preset.maxHeight > 0, let res = video.size {
+            let w = res.width, h = res.height
+            let maxW = CGFloat(preset.maxWidth), maxH = CGFloat(preset.maxHeight)
+            if w > maxW || h > maxH {
+                let factor = min(maxW / w, maxH / h)
+                actions.insert(.downscale(factor: factor, cropSize: nil), at: 0)
+            }
+        }
+    }
+
     let hasDownscale = actions.contains(where: \.isDownscale)
     let hasSpeedChange = actions.contains(where: \.isChangePlaybackSpeed)
 

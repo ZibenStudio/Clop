@@ -157,10 +157,65 @@ func decrementedDownscaleFactor(_ factor: Double) -> Double {
     var originalPath: FilePath?
 
     let hasDownscale = actions.contains(where: \.isDownscale)
-
-    // Auto-detect conversion from settings (unless explicit .convert action exists)
     let hasExplicitConvert = actions.contains(where: \.isConvert)
-    let autoConversionFormat: UTType? = if hasExplicitConvert {
+
+    // MARK: - Ziben preset hook (auto sources)
+    // Apply the active Ziben preset on auto sources (clipboard, watched folders, photos, ...).
+    // Perf-preserving: resize-then-cwebp in two passes, with cwebp args driven by preset quality.
+    // No effect when the caller provides an explicit downscale/convert action.
+    let zibenPreset: ImagePreset? = {
+        guard let source, !hasExplicitConvert, !hasDownscale else { return nil }
+        let isAuto: Bool = switch source {
+        case .clipboard, .fileWatcher, .photos, .openWith, .finder, .service: true
+        case .dir: true
+        default: false
+        }
+        guard isAuto else { return nil }
+        return IMAGE_PRESETS[Defaults[.activeImagePreset]]
+    }()
+
+    if let preset = zibenPreset {
+        if Defaults[.autoResizeClipboardImages], preset.maxWidth > 0, preset.maxHeight > 0 {
+            let w = img.size.width
+            let h = img.size.height
+            let maxW = CGFloat(preset.maxWidth)
+            let maxH = CGFloat(preset.maxHeight)
+            if w > maxW || h > maxH {
+                let scale = min(maxW / w, maxH / h)
+                let newW = Int((w * scale).rounded(.down))
+                let newH = Int((h * scale).rounded(.down))
+                log.debug("[Ziben \(preset.name)] resize \(w.i)x\(h.i) -> \(newW)x\(newH)")
+                // Share the main pipeline optimiser id so the label gets replaced by later steps
+                let resizeOpt = OM.optimiser(
+                    id: id ?? pathString,
+                    type: .image(img.type),
+                    operation: "Resizing to \(newW)x\(newH)",
+                    hidden: hideFloatingResult, source: source, indeterminateProgress: true
+                )
+                do {
+                    let willConvertWebP = preset.convertToWebP && Defaults[.autoConvertClipboardToWebP] && img.type != .webP
+                    img = try img.resize(toSize: CropSize(width: newW, height: newH), optimiser: resizeOpt, adaptiveSize: false, skipOptimisation: willConvertWebP || img.type == .webP)
+                    pathString = img.path.string
+                    allowLarger = true
+                } catch {
+                    log.error("[Ziben \(preset.name)] resize failed, continuing: \(error)")
+                    resizeOpt.finish(error: "Resize failed")
+                    resizeOpt.remove(after: 3000, withAnimation: true)
+                }
+            }
+        }
+        if preset.convertToWebP, Defaults[.autoConvertClipboardToWebP], img.type != .webP {
+            log.debug("[Ziben \(preset.name)] convert \(img.type.identifier) -> webp q\(preset.quality)")
+            let converted = try img.convert(to: UTType.webP, asTempFile: true)
+            img = try applyImageConversionBehaviour(original: img, converted: converted, originalPath: &originalPath)
+            pathString = img.path.string
+            allowLarger = true
+        }
+    }
+
+    // Auto-detect conversion from settings (unless explicit .convert action exists, or Ziben preset already produced WebP)
+    let zibenKeepsWebP = (zibenPreset != nil) && Defaults[.autoConvertClipboardToWebP] && img.type == .webP
+    let autoConversionFormat: UTType? = if hasExplicitConvert || zibenKeepsWebP {
         nil
     } else {
         Defaults[.formatsToConvertToJPEG].contains(img.type)

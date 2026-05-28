@@ -670,7 +670,7 @@ enum TempPipelineSegment {
                         for step in steps {
                             if case let .convert(fmt, _) = step {
                                 switch fmt {
-                                case "hevc": ffmpegEncoder = ["-vcodec", "hevc_videotoolbox", "-q:v", "40", "-tag:v", "hvc1"]; outExt = "mp4"
+                                case "hevc": ffmpegEncoder = zibenHEVCArgs(); outExt = "mp4"
                                 case "x265": ffmpegEncoder = ["-vcodec", "libx265", "-crf", "28", "-tag:v", "hvc1", "-preset", "medium"]; outExt = "mp4"
                                 case "av1": ffmpegEncoder = ["-vcodec", "libsvtav1"]; outExt = "mkv"
                                 case "webm": ffmpegEncoder = ["-vcodec", "libvpx-vp9", "-crf", "31", "-b:v", "0", "-row-mt", "1"]; outExt = "webm"
@@ -862,7 +862,7 @@ enum TempPipelineSegment {
             let isCodecConversion = type == .hevcVideo || type == .av1Video || type == .webm
 
             let encoderOverride: [String]? = if type == .hevcVideo {
-                ["-vcodec", "hevc_videotoolbox", "-q:v", "40", "-tag:v", "hvc1"]
+                zibenHEVCArgs()
             } else if type == .av1Video {
                 ["-vcodec", "libsvtav1"]
             } else if type == .webm {

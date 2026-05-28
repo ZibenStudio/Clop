@@ -348,7 +348,7 @@ final class PipelineExecution {
 
         // Video codec targets (not file extensions) need special handling
         let videoCodecArgs: (encoder: [String], ext: String)? = switch formatStr {
-        case "hevc": (["-vcodec", "hevc_videotoolbox", "-q:v", "40", "-tag:v", "hvc1"], "mp4")
+        case "hevc": (zibenHEVCArgs(), "mp4")
         case "x265": (["-vcodec", "libx265", "-crf", "28", "-tag:v", "hvc1", "-preset", "medium"], "mp4")
         case "av1": (["-vcodec", "libsvtav1"], "mkv")
         default: nil
@@ -862,7 +862,7 @@ final class PipelineExecution {
         for s in batch {
             if case let .convert(fmt, _) = s {
                 switch fmt {
-                case "hevc": ffmpegEncoder = ["-vcodec", "hevc_videotoolbox", "-q:v", "40", "-tag:v", "hvc1"]; outExt = "mp4"
+                case "hevc": ffmpegEncoder = zibenHEVCArgs(); outExt = "mp4"
                 case "x265": ffmpegEncoder = ["-vcodec", "libx265", "-crf", "28", "-tag:v", "hvc1", "-preset", "medium"]; outExt = "mp4"
                 case "av1": ffmpegEncoder = ["-vcodec", "libsvtav1"]; outExt = "mkv"
                 default: break

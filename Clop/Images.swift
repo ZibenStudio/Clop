@@ -816,7 +816,7 @@ class Image: CustomStringConvertible {
         return try resize(toSize: size, optimiser: optimiser, aggressiveOptimisation: aggressiveOptimisation, adaptiveSize: adaptiveSize)
     }
 
-    func resize(toSize cropSize: CropSize, optimiser: Optimiser, aggressiveOptimisation: Bool? = nil, adaptiveSize: Bool = false) throws -> Image {
+    func resize(toSize cropSize: CropSize, optimiser: Optimiser, aggressiveOptimisation: Bool? = nil, adaptiveSize: Bool = false, skipOptimisation: Bool = false) throws -> Image {
         let pathForResize = FilePath.forResize.appending(path.nameWithoutSize)
         if path != pathForResize {
             try path.copy(to: pathForResize, force: true)
@@ -853,6 +853,10 @@ class Image: CustomStringConvertible {
 
         guard let pbImage = Image(path: pathForResize, optimised: false, retinaDownscaled: retinaDownscaled) else {
             throw ClopError.downscaleFailed(pathForResize)
+        }
+        // Ziben custom: skip lossy compression when caller will convert format right after
+        if skipOptimisation {
+            return pbImage
         }
         return try pbImage.optimise(optimiser: optimiser, allowLarger: true, aggressiveOptimisation: aggressiveOptimisation, adaptiveSize: adaptiveSize)
     }
@@ -894,6 +898,9 @@ class Image: CustomStringConvertible {
         case .tiff:
             img = try optimiseTIFF(optimiser: optimiser, aggressiveOptimisation: aggressiveOptimisation, adaptiveSize: adaptiveSize)
         case .jxl:
+            img = self
+        case .webP, .avif, .heic:
+            // Ziben custom: already lossy-encoded, no further optimisation needed
             img = self
         default:
             throw ClopError.unknownImageType(path)
@@ -1044,10 +1051,12 @@ class Image: CustomStringConvertible {
     }
 
     private func conversionArgs(to format: String, outPath: FilePath) -> [String] {
-        switch format {
+        // Ziben custom: drive cwebp quality from active preset, use faster -preset icon
+        let webpQuality = IMAGE_PRESETS[Defaults[.activeImagePreset]]?.quality ?? 60
+        return switch format {
         case "avif": ["--avif", "-q", "60", "-o", outPath.string, path.string]
         case "heic": ["-q", "60", "-o", outPath.string, path.string]
-        case "webp": ["-mt", "-q", "60", "-sharp_yuv", "-metadata", "all", path.string, "-o", outPath.string]
+        case "webp": ["-mt", "-preset", "icon", "-q", "\(webpQuality)", "-metadata", "all", path.string, "-o", outPath.string]
         default: []
         }
     }
