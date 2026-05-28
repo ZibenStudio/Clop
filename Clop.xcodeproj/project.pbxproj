@@ -898,8 +898,8 @@
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/FuzzyIdeas/Lowtech";
 			requirement = {
-				branch = ventura;
-				kind = branch;
+				kind = revision;
+				revision = 6913eef15b98f62d4507ebe4e519a7a8a19b4185;
 			};
 		};
 		C7956A482AC209F200C0EDF2 /* XCRemoteSwiftPackageReference "swift-argument-parser" */ = {
